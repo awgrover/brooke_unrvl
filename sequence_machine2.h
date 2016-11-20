@@ -117,8 +117,21 @@ struct machine {
         }
         memset(state, 0, 8);
         idx = (idx + 1) % len;  // start over at 0
-      } 
+    } 
   }
+
+  // this runs it all the way through once, do machine.idx=0 if you stop early
+  boolean run_once() {
+    run();
+    if (idx==0) {
+      return false;
+    }
+    else {
+      return true; // still running
+    }
+  }
+
+
 };
 
 // Use this instead of delay.
@@ -126,6 +139,7 @@ struct machine {
 // Convenient to use like: void xyz() { static unsigned long w; wait_for(&w, 2000) }
 // "wait" is milliseconds.
 boolean wait_for(byte *state, int wait) { return wait_for(state, (unsigned long) wait); }
+boolean wait_for(unsigned long &state, int wait) { return wait_for((byte *)&state, (unsigned long) wait); }
 boolean wait_for(byte *state, long unsigned int wait) {
   unsigned long *timer = (unsigned long *)state;
   if (*timer == 0) {
