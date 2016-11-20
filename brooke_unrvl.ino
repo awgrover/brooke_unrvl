@@ -1,15 +1,21 @@
 /*
     Do you want a don't ring switch? It still talks on pickup, but won't ring?
     If you leave the arduino running for about 3 consecutive days, this code will get confused.
+    Shouldn't we play a different message if the recording has "filled up"?
+    "Tune" the area the motion-detect says in relation to the phone/room.
+
+    Should it make noise if left off hook too long? Of if nothing moves for too long?
+    
 */
 
 #define OnHookPin 4
 #define RingerPin 3
 #define PIRPin 5
+// mp3 stuff i2c I think ...
+
 #define RingerFrequency 38 // hertz
 #define RingingDelay  (1000 / 38) // because of rounding we'll be off a bit.
 
-// timings 
 #define RingingDuration 1000   // millis
 #define BetweenRings  1500     // millis
 #define StopRingingAfter (30 * 1000) // millis
@@ -26,7 +32,6 @@ FunctionPointer ringing_sound[] = {
     &wait_for<RingingDelay>,
     &digitalWrite<RingerPin, LOW>, 
     &wait_for<RingingDelay>,
-    &digitalWrite<RingerPin, LOW>,
     };
 
 // But actual ring sequence is ringing, pause, ringing...
@@ -86,12 +91,13 @@ void loop() {
 
         case ready_to_call:
             if (motion() && onhook() ) {
+                ring_a_while(false); // start the ring-pattern at the beginning
                 state = ring_the_phone;
                 }
             break;
 
         case ring_the_phone:
-            if (ring_a_while()) {
+            if (ring_a_while(true)) {
                 if ( ! onhook() ) {
                     // answered!
                     state = play_message;
@@ -140,9 +146,16 @@ void loop() {
 
     }
 
-boolean ring_a_while() {
+boolean ring_a_while(boolean continue_ringing) {
     // for StopRingingAfter millis
+    // Tell us when to restart the pattern: give us continue_ringing = false
     static unsigned long stop_ringing_at = 0; // unlikely we'll every hit 0 accidentally
+    declare_machine(ringing_steps); // because we do the reset before we run it
+
+    if (!continue_ringing) {
+        machine_from(ringing_steps).idx = 0; // reset the pattern
+        return false; // not really relevant
+        }
 
     if (stop_ringing_at == 0) {
         stop_ringing_at = millis() + StopRingingAfter;
@@ -154,7 +167,7 @@ boolean ring_a_while() {
         
     if (ring_step == 0) {run_machine(ringing_sound);}
 
-    run_machine(ringing_steps); // update ring_step from 0,1,0,1 as per delay pattern
+    machine_from(ringing_steps).run(); // update ring_step from 0,1,0,1 as per delay pattern
 
     return false; // still ringing
     }
