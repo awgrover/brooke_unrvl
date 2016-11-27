@@ -8,6 +8,9 @@
     
 */
 
+// On for serial/development, 0 for no serial (so you can avoid serial)
+#define DEV 1
+
 #define OnHookPin 4
 #define RingerPin 3
 #define PIRPin 5
@@ -24,8 +27,9 @@
 #define PIRDebounce 20 // PIR also needs debounce (for "on")
 
 // I'm using a non-blocking sequence tool, so we can respond to pickup/hangup, etc.
-#include "sequence_machine2.h"
+#include "state_machine.h"
 
+/*
 // Ringing _sound_ is just on/off
 FunctionPointer ringing_sound[] = {
     &digitalWrite<RingerPin, HIGH>, 
@@ -33,22 +37,15 @@ FunctionPointer ringing_sound[] = {
     &digitalWrite<RingerPin, LOW>, 
     &wait_for<RingingDelay>,
     };
+*/
 
 // But actual ring sequence is ringing, pause, ringing...
-// SO, this machine just goes back & forth with delays. Look at ring_step for the current on/off
-enum ring_step_stages { ring_on, ring_off };
-ring_step_stages ring_step;
+SIMPLESTATE(ring_on_duration, ring_pause)
+SIMPLESTATEAS(ring_pause, sm_delay<RingingDuration>, ring_on_duration)
 
-// Must be one line to fool IDE preprocessor
-template <ring_step_stages s> boolean next_ring_step(byte *x) { ring_step = s; return true;} // 0..1 and around again
+STATEMACHINE(ringing_pattern, ring_on_duration);
 
-FunctionPointer ringing_steps[] = {
-   &next_ring_step<ring_on>,
-   &wait_for<RingingDuration>,
-   &next_ring_step<ring_off>,
-   &wait_for<BetweenRings>
-   };
-
+/*
 FunctionPointer say_hello[] = {
     &start_playing_hello,
     &wait_for_done_playing
@@ -58,119 +55,44 @@ FunctionPointer do_recording[] = {
     &start_recording,
     // &wait_for_done_recording // how do we say "record up to 30 seconds, but let us stop early if we want?"
     };
+*/
 
-// On for serial/development, 0 for no serial (so you can avoid serial)
-#define DEV 1
+//
+// Overall state machine
+//
+    // Startup waits till onhook
+    SIMPLESTATE(wait_for_onhook, wait_for_victim)
+    // ready, wait for motion (and still onhook)
+    SIMPLESTATE(wait_for_victim, ring_the_phone)
+    // ring the phone for a while, then give up.
+    STATE(ring_the_phone, between_calls)
+        GOTOWHEN(SM_not< onhook >, pause_before_message) // somebody answered!
+    END_STATE
+    // Hello
+    SIMPLESTATEAS(pause_before_message, sm_delay<600>, saying_hello) // give time to get to ear
+    STATE(saying_hello, record_response) // start recording after saying hello
+        GOTOWHEN(onhook, between_calls) // they hung up on us
+    END_STATE
+    // Record
+    STATE(record_response, wait_for_hangup) // record, and wait for hangup
+        GOTOWHEN(onhook, between_calls) // they hung up before timeout
+    END_STATE
+    SIMPLESTATEAS(wait_for_hangup, wait_for_onhook, between_calls) // could do a delay<xx> and get annoyed
+    // nothing can happen for a bit
+    SIMPLESTATEAS(between_calls, sm_delay<BetweenCalls>, wait_for_victim)
+
+STATEMACHINE(the_system, wait_for_onhook);
 
 void setup() {
     if (DEV) Serial.begin(19200);
     pinMode(RingerPin, OUTPUT);
     }
 
-enum system_states { 
-    startup, // power on
-    ready_to_call, // on-hook, and it's been a while since last call
-    ring_the_phone, // start ringing, hope they pickup
-    play_message, // yay, say something!
-    record_response, // try to record their response
-    wait_for_hangup, // after recording
-    between_calls, // wait between calls
-    };
-
 void loop() {
-    static system_states state = startup; // on power on
-
-    switch (state) {
-
-        case startup:
-            if (onhook()) {
-                state = ready_to_call; // could start at: between_calls. if you want a start delay
-                }
-            // else wait for onhook
-            break;
-
-        case ready_to_call:
-            if (motion() && onhook() ) {
-                ring_a_while(false); // start the ring-pattern at the beginning
-                state = ring_the_phone;
-                }
-            break;
-
-        case ring_the_phone:
-            if (ring_a_while(true)) {
-                if ( ! onhook() ) {
-                    // answered!
-                    state = play_message;
-                    }
-                else {
-                    // no one answered. we are sad.
-                    state = between_calls;
-                    }
-                }
-            break;
-
-        case play_message:
-            if( saying_hello(true) ) {
-                // we are saying hello...
-                if ( onhook() ) {
-                    // they hung up on us before we finished
-                    saying_hello(false); // have to reset
-                    state = between_calls;
-                    }
-                }
-            else {
-                // it finished hello
-                state = record_response;
-                }
-            break;
-
-        case record_response:
-            if (recording(true)) {
-                if (! onhook()) {
-                    recording(false); // signal stop recording
-                    state = between_calls;
-                    }
-                }
-            else {
-                state = wait_for_hangup;
-                }
-            break;
-            
-        case between_calls:
-            static byte between_timer[8];
-            if ( wait_for(between_timer, BetweenCalls) ) { // i.e. expired
-                state = ready_to_call;
-                }
-            break;
-        }
-
+    the_system.run();
     }
 
-boolean ring_a_while(boolean continue_ringing) {
-    // for StopRingingAfter millis
-    // Tell us when to restart the pattern: give us continue_ringing = false
-    static unsigned long stop_ringing_at = 0; // unlikely we'll every hit 0 accidentally
-    declare_machine(ringing_steps); // because we do the reset before we run it
-
-    if (!continue_ringing) {
-        machine_from(ringing_steps).idx = 0; // reset the pattern
-        return false; // not really relevant
-        }
-
-    if (stop_ringing_at == 0) {
-        stop_ringing_at = millis() + StopRingingAfter;
-        }
-    else if (millis() >= StopRingingAfter) {
-        stop_ringing_at = 0; // for next time
-        return true; // stop ringing
-        }
-        
-    if (ring_step == 0) {run_machine(ringing_sound);}
-
-    machine_from(ringing_steps).run(); // update ring_step from 0,1,0,1 as per delay pattern
-
-    return false; // still ringing
-    }
+boolean wait_for_onhook() { return ! onhook(); } // we are waiting for it
 
 boolean onhook() {
     static boolean is_onhook = true; // got to start somewhere
@@ -182,7 +104,7 @@ boolean onhook() {
     if (last_sample != now_sample) {
         // it changed, start/keep debouncing
         debounce_timer = 0ul;
-        wait_for(debounce_timer,  HookDebounce); // starts it (sets debounce_timer)
+        wait_for(debounce_timer,  HookDebounce); // starts it (sets debounce_timer) 
         last_sample = now_sample;
         }
 
@@ -210,6 +132,62 @@ boolean motion() {
         }
 
     return has_motion;
+    }
+
+boolean wait_for_victim() {
+    // shouldn't have to worry about onhook here, but it makes it clear
+    return !( onhook() && motion() ); // we are waiting for both
+    }
+
+boolean ring_the_phone(StateMachinePhase phase) {
+    // fixme: timeout...
+    if (phase == SM_Start) {
+        RESTART(ringing_pattern, ring_on_duration); // we always restart the pattern 
+        }
+    ringing_pattern.run();
+    // fixme: return
+    }
+
+boolean record_response(StateMachinePhase phase) {
+    // start record, wait for n seconds, cleanup
+    }
+
+boolean wait_for_hangup(StateMachinePhase phase) {
+    // start record, wait for n seconds, cleanup
+    }
+
+boolean saying_hello(StateMachinePhase phase) {
+    // start the sound, wait for it to finish, cleanup
+    }
+
+boolean ring_on_duration() {
+    // run ring_sound for n millis
+    }
+/*
+boolean ring_a_while(boolean continue_ringing) {
+    // for StopRingingAfter millis
+    // Tell us when to restart the pattern: give us continue_ringing = false
+    static unsigned long stop_ringing_at = 0; // unlikely we'll every hit 0 accidentally
+    declare_machine(ringing_steps); // because we do the reset before we run it
+
+    if (!continue_ringing) {
+        machine_from(ringing_steps).idx = 0; // reset the pattern
+        return false; // not really relevant
+        }
+
+    if (stop_ringing_at == 0) {
+        stop_ringing_at = millis() + StopRingingAfter;
+        }
+    else if (millis() >= StopRingingAfter) {
+        stop_ringing_at = 0; // for next time
+        return true; // stop ringing
+        }
+        
+    if (ring_step == 0) {run_machine(ringing_sound);}
+
+    machine_from(ringing_steps).run(); // update ring_step from 0,1,0,1 as per delay pattern
+
+    return false; // still ringing
     }
 
 boolean saying_hello(boolean playing) {
@@ -260,4 +238,28 @@ boolean start_recording(byte *x) {
     // have to tell it a new recording number each time, I assume...
     return false; // we are immediately done
     }
+
+*/
+// Use this instead of delay.
+// Also, an example of a function for use in the sequences.
+// Convenient to use like: void xyz() { static unsigned long w; wait_for(&w, 2000) }
+// "wait" is milliseconds.
+boolean wait_for(byte *state, int wait) { return wait_for(state, (unsigned long) wait); }
+boolean wait_for(unsigned long &state, int wait) { return wait_for((byte *)&state, (unsigned long) wait); }
+boolean wait_for(byte *state, long unsigned int wait) {
+  unsigned long *timer = (unsigned long *)state;
+  if (*timer == 0) {
+      // Serial.print(millis()); Serial.print(": "); Serial.print("Start delay "); Serial.println(wait); 
+      *timer = wait + millis();
+      return false;
+  }
+  else if (*timer <= millis()) {
+    // Serial.print(millis()); Serial.print(": "); Serial.print("Finish delay "); Serial.println(wait);
+    *timer = 0;
+    return true;
+  }
+  else {
+    return false;
+  } 
+}
 
