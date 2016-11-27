@@ -33,7 +33,10 @@
 
 */
 
+#ifndef DEBUG
 #define DEBUG 0
+#endif
+
 #if DEBUG==1
   #define debugm(msg) Serial.print(msg)
 #else

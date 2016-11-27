@@ -12,7 +12,7 @@
 #define DEV 1
 
 #define OnHookPin 4
-#define RingerPin 3
+#define RingerPin 13 // fixme 3
 #define PIRPin 5
 // mp3 stuff i2c I think ...
 
@@ -29,18 +29,17 @@
 // I'm using a non-blocking sequence tool, so we can respond to pickup/hangup, etc.
 #include "state_machine.h"
 
-/*
-// Ringing _sound_ is just on/off
-FunctionPointer ringing_sound[] = {
-    &digitalWrite<RingerPin, HIGH>, 
-    &wait_for<RingingDelay>,
-    &digitalWrite<RingerPin, LOW>, 
-    &wait_for<RingingDelay>,
-    };
-*/
+// ringer sound is about 30hz
+SIMPLESTATEAS(ring1, (sm_digitalWrite<RingerPin, HIGH>), pause1)
+SIMPLESTATEAS(pause1, sm_delay<RingingDelay>, ring2)
+SIMPLESTATEAS(ring2, (sm_digitalWrite<RingerPin, LOW>), pause2)
+SIMPLESTATEAS(pause2, sm_delay<RingingDelay>, ring1)
 
-// But actual ring sequence is ringing, pause, ringing...
-SIMPLESTATE(ring_on_duration, ring_pause)
+STATEMACHINE(ring_sound, ring1)
+
+// But actual ring pattern is ringing, pause, ringing...
+SIMPLESTATE(ring_on_duration, ring_finish)
+SIMPLESTATEAS(ring_finish, (sm_digitalWrite<RingerPin, LOW>), ring_pause) // nicety
 SIMPLESTATEAS(ring_pause, sm_delay<RingingDuration>, ring_on_duration)
 
 STATEMACHINE(ringing_pattern, ring_on_duration);
@@ -84,15 +83,30 @@ FunctionPointer do_recording[] = {
 STATEMACHINE(the_system, wait_for_onhook);
 
 void setup() {
-    if (DEV) Serial.begin(19200);
+    if (DEV) { Serial.begin(19200); Serial.println("Start"); }
     pinMode(RingerPin, OUTPUT);
+    digitalWrite(RingerPin, LOW);
     }
 
-void loop() {
+void loop() { // tests
+    // ring_sound.run();
+    // ringing_pattern.run();
+    if (true) { // ring_the_phone
+        Serial.print("start ");  Serial.println(millis());
+        if (!ring_the_phone(SM_Start)) { Serial.println("failed on sm_start"); }
+        while(ring_the_phone(SM_Running)) {}; 
+        Serial.print("Stop "); Serial.println(millis()); 
+        delay(2000);
+        }
+    }
+
+void xxloop() {
     the_system.run();
     }
 
-boolean wait_for_onhook() { return ! onhook(); } // we are waiting for it
+boolean wait_for_onhook() { 
+    return ! onhook(); // we are waiting for it
+    }
 
 boolean onhook() {
     static boolean is_onhook = true; // got to start somewhere
@@ -140,12 +154,12 @@ boolean wait_for_victim() {
     }
 
 boolean ring_the_phone(StateMachinePhase phase) {
-    // fixme: timeout...
+    static unsigned long timer = 0;
     if (phase == SM_Start) {
         RESTART(ringing_pattern, ring_on_duration); // we always restart the pattern 
         }
     ringing_pattern.run();
-    // fixme: return
+    return !wait_for(timer, StopRingingAfter);
     }
 
 boolean record_response(StateMachinePhase phase) {
@@ -162,34 +176,11 @@ boolean saying_hello(StateMachinePhase phase) {
 
 boolean ring_on_duration() {
     // run ring_sound for n millis
+    static unsigned long timer = 0; 
+    ring_sound.run();
+    return ! wait_for(timer, 1000);
     }
 /*
-boolean ring_a_while(boolean continue_ringing) {
-    // for StopRingingAfter millis
-    // Tell us when to restart the pattern: give us continue_ringing = false
-    static unsigned long stop_ringing_at = 0; // unlikely we'll every hit 0 accidentally
-    declare_machine(ringing_steps); // because we do the reset before we run it
-
-    if (!continue_ringing) {
-        machine_from(ringing_steps).idx = 0; // reset the pattern
-        return false; // not really relevant
-        }
-
-    if (stop_ringing_at == 0) {
-        stop_ringing_at = millis() + StopRingingAfter;
-        }
-    else if (millis() >= StopRingingAfter) {
-        stop_ringing_at = 0; // for next time
-        return true; // stop ringing
-        }
-        
-    if (ring_step == 0) {run_machine(ringing_sound);}
-
-    machine_from(ringing_steps).run(); // update ring_step from 0,1,0,1 as per delay pattern
-
-    return false; // still ringing
-    }
-
 boolean saying_hello(boolean playing) {
     // you have to tell us if you stopped early by passing false for playing
     declare_machine(say_hello);
@@ -244,9 +235,11 @@ boolean start_recording(byte *x) {
 // Also, an example of a function for use in the sequences.
 // Convenient to use like: void xyz() { static unsigned long w; wait_for(&w, 2000) }
 // "wait" is milliseconds.
+// e.g.: static unsigned long timer = 0; if (wait_for(timer, 100)) { running...}
 boolean wait_for(byte *state, int wait) { return wait_for(state, (unsigned long) wait); }
 boolean wait_for(unsigned long &state, int wait) { return wait_for((byte *)&state, (unsigned long) wait); }
 boolean wait_for(byte *state, long unsigned int wait) {
+  // true on expire
   unsigned long *timer = (unsigned long *)state;
   if (*timer == 0) {
       // Serial.print(millis()); Serial.print(": "); Serial.print("Start delay "); Serial.println(wait); 
