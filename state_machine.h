@@ -155,7 +155,12 @@ StateXtionFnPtr_ one_step(StateMachine &sm, ActionFnPtr action, StateXtionFnPtr 
     StateXtionFnPtr *pred = (StateXtionFnPtr*)preds; // head of list
     while(*pred) { // till NULL
         StateXtionFnPtr rez = (**pred)(sm); // result is either false or a fnptr
-        if (rez) { return rez; };
+        if (rez) { 
+          sm.phase = SM_Finish;
+          (*action)(sm); // count on the wrappers to inhibit as necessary
+          sm.phase = SM_Start;
+          return rez; 
+          };
         pred++;
         }
     if ( again ) {

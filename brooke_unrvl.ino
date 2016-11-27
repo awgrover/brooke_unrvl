@@ -22,6 +22,7 @@
 #define RingingDuration 1000   // millis
 #define BetweenRings  1500     // millis
 #define StopRingingAfter (30 * 1000) // millis
+#define RecordingLength (10*1000) // millis
 #define BetweenCalls (30 * 1000) // millis
 #define HookDebounce 10 // millis to wait for a steady value
 #define PIRDebounce 20 // PIR also needs debounce (for "on")
@@ -44,18 +45,6 @@ SIMPLESTATEAS(ring_pause, sm_delay<RingingDuration>, ring_on_duration)
 
 STATEMACHINE(ringing_pattern, ring_on_duration);
 
-/*
-FunctionPointer say_hello[] = {
-    &start_playing_hello,
-    &wait_for_done_playing
-    };
-
-FunctionPointer do_recording[] = {
-    &start_recording,
-    // &wait_for_done_recording // how do we say "record up to 30 seconds, but let us stop early if we want?"
-    };
-*/
-
 //
 // Overall state machine
 //
@@ -69,7 +58,7 @@ FunctionPointer do_recording[] = {
     END_STATE
     // Hello
     SIMPLESTATEAS(pause_before_message, sm_delay<600>, saying_hello) // give time to get to ear
-    STATE(saying_hello, record_response) // start recording after saying hello
+    STATE(saying_hello, record_response) // wait for "hello" to finish
         GOTOWHEN(onhook, between_calls) // they hung up on us
     END_STATE
     // Record
@@ -163,15 +152,36 @@ boolean ring_the_phone(StateMachinePhase phase) {
     }
 
 boolean record_response(StateMachinePhase phase) {
-    // start record, wait for n seconds, cleanup
-    }
-
-boolean wait_for_hangup(StateMachinePhase phase) {
-    // start record, wait for n seconds, cleanup
+    static unsigned long timer = 0;
+    if (phase == SM_Start) {
+        // start recording fixme
+        timer = 0;
+        return true; // and continue
+        }
+    else if (phase == SM_Running) {
+        // record for a while
+        return ! wait_for(timer, RecordingLength);
+        }
+    else if (phase == SM_Finish) {
+        // cleanup fixme
+        return false;
+        }
     }
 
 boolean saying_hello(StateMachinePhase phase) {
-    // start the sound, wait for it to finish, cleanup
+    static unsigned long timer = 0;
+    if (phase == SM_Start) {
+        // start the sound fixme
+        timer = 0;
+        return true; // and continue
+        }
+    else if (phase == SM_Running) {
+        return ! wait_for(timer, 1000); // fixme: when does the sound end?
+        }
+    else if (phase == SM_Finish) {
+        // cleanup fixme
+        return false;
+        }
     }
 
 boolean ring_on_duration() {
