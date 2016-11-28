@@ -229,3 +229,8 @@ template <SimplePredicate a, SimplePredicate b> boolean SM_and() { return a() &&
 template <SimplePredicate a> boolean SM_not() { return !a(); }
 
 boolean _FOREVER_xtion(StateMachine &sm) { return true; } // assume you'll use a GOTOWHEN
+
+template<unsigned long at> boolean startup_delay() {
+  // wait till clock is "at"
+  return millis() >= at;
+  }

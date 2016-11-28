@@ -8,13 +8,37 @@
     
 */
 
+/* PIR https://www.adafruit.com/product/189 ?
+    No library needed.
+    Assuming HIGH on signal. may need 10K pullup on pir signal. retriggering off 
+    Assuming stabilize times. Assuming analog: needs debounce. fixme
+    Could change to edge-triggered-to-high interrupt driven
+*/
+/* MP3 play/record https://www.adafruit.com/products/1381 ?
+    https://github.com/adafruit/Adafruit_VS1053_Library/archive/master.zip
+    SPI, so, Pins:
+        CLK -> 13, MISO -> 12, MOSI -> 11, CS -> 10, RST -> 9, DCS -> 8, CARDCS -> 4, DREQ -> 3
+    Need:
+        hello.mp3
+        v44k1q05.img
+
+    oggvorbis doc: https://cdn-shop.adafruit.com/datasheets/VorbisEncoder170c.pdf
+    The SD card is a separate SPI object!, e.g. SD.begin(cardseelectpin)
+*/
+
 // On for serial/development, 0 for no serial (so you can avoid serial)
 #define DEV 1
 
-#define OnHookPin 4
-#define RingerPin 13 // fixme 3
-#define PIRPin 5
-// mp3 stuff i2c I think ...
+#define OnHookPin 5
+#define RingerPin 13 /* fixme 3 */
+#define PIRPin 5 
+// MP3
+// SPIpins fixed: 11,12,13 
+#define BREAKOUT_RESET  9      // VS1053 reset pin (output)
+#define BREAKOUT_CS     10     // VS1053 chip select pin (output)
+#define BREAKOUT_DCS    8      // VS1053 Data/command select pin (output)
+#define CARDCS 4     // Card chip select pin
+#define DREQ 3       // VS1053 Data request, ideally an Interrupt pin. 2 or 3 on UNO
 
 #define RingerFrequency 38 // hertz
 #define RingingDelay  (1000 / 38) // because of rounding we'll be off a bit.
@@ -26,6 +50,12 @@
 #define BetweenCalls (30 * 1000) // millis
 #define HookDebounce 10 // millis to wait for a steady value
 #define PIRDebounce 20 // PIR also needs debounce (for "on")
+#define PIRStabilize (30*1000) // PIR takes some initial time to stabilize on power up
+
+#include <SPI.h>
+#include <Adafruit_VS1053.h>
+#include <SD.h>
+Adafruit_VS1053_FilePlayer musicPlayer(BREAKOUT_RESET, BREAKOUT_CS, BREAKOUT_DCS, DREQ, CARDCS);
 
 // I'm using a non-blocking sequence tool, so we can respond to pickup/hangup, etc.
 #include "state_machine.h"
@@ -48,8 +78,10 @@ STATEMACHINE(ringing_pattern, ring_on_duration);
 //
 // Overall state machine
 //
-    // Startup waits till onhook
-    SIMPLESTATE(wait_for_onhook, wait_for_victim)
+    // Startup: various things to wait for
+    SIMPLESTATE(wait_for_onhook, pir_stabilize) // don't start till on hook
+    SIMPLESTATEAS(pir_stabilize, startup_delay<PIRStabilize>, wait_for_victim) // let pir stabilize
+
     // ready, wait for motion (and still onhook)
     SIMPLESTATE(wait_for_victim, ring_the_phone)
     // ring the phone for a while, then give up.
@@ -71,10 +103,42 @@ STATEMACHINE(ringing_pattern, ring_on_duration);
 
 STATEMACHINE(the_system, wait_for_onhook);
 
+// for SD filenames
+struct {
+    char name[8] = "000.ogg";
+    int count = 0;
+
+    void next_available() {
+        // will get stuck at 999
+        while (SD.exists(name) && count < 999) {
+            count++;
+            name[0] = '0' + (count / 100);
+            name[1] = '0' + ((count % 10) / 100);
+            name[2] = '0' + (count % 100);
+            }
+        return;
+        }
+        
+    } record_to;
+
+char oggimg[] = "v44k1q05.img"; // should be const, too bad
+
 void setup() {
-    if (DEV) { Serial.begin(19200); Serial.println("Start"); }
+    if (DEV) { while(!Serial) {}; Serial.begin(19200); Serial.println("Start"); }
     pinMode(RingerPin, OUTPUT);
     digitalWrite(RingerPin, LOW);
+    pinMode(PIRPin, INPUT);
+
+    if (! musicPlayer.begin()) { Serial.println("VS1053 not found. pins?"); }
+    musicPlayer.setVolume(20,20); // lower is louder!
+    // If DREQ is on an interrupt pin (on uno, #2 or #3) we can do background audio playing
+    if (!musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT)) { Serial.println(F("DREQ pin is not an interrupt pin")); }
+
+    if (!SD.begin(CARDCS)) { Serial.println("SD card not found. pins? card?"); }
+    // fixme: have to do this each time ready to record?
+    if (! musicPlayer.prepareRecordOgg(oggimg)) { Serial.println("Couldn't load plugin!"); } // that's HIFI
+    record_to.next_available();
+    if (DEV) { Serial.print("Next recording ");Serial.println(record_to.name); }
     }
 
 void loop() { // tests
@@ -87,10 +151,14 @@ void loop() { // tests
         Serial.print("Stop "); Serial.println(millis()); 
         delay(2000);
         }
+    // musicPlayer.sineTest(0x44, 500);
     }
 
 void xxloop() {
     the_system.run();
+    // these debounce, so let them poll
+    onhook();
+    motion();
     }
 
 boolean wait_for_onhook() { 
@@ -127,11 +195,11 @@ boolean motion() {
     if (has_motion && wait_for(ignore_changes, PIRDebounce)) {
         // check for change to no-motion if has-motion has stabilised
         // i.e. wait after "motion" before we check again
-        has_motion = digitalRead(PIRPin); // LOW is no motion
+        has_motion = digitalRead(PIRPin) == HIGH; // LOW is no motion
         }
     else {
         // if no-motion, immediately react to 
-        has_motion = digitalRead(PIRPin);
+        has_motion = digitalRead(PIRPin) == HIGH;
         }
 
     return has_motion;
@@ -153,33 +221,43 @@ boolean ring_the_phone(StateMachinePhase phase) {
 
 boolean record_response(StateMachinePhase phase) {
     static unsigned long timer = 0;
+    static File recording;
+
     if (phase == SM_Start) {
-        // start recording fixme
+        if (DEV) {Serial.print("Recording to "); Serial.println(record_to.name);}
+        recording = SD.open(filename, FILE_WRITE);
+        if (! recording) { Serial.println("Couldn't open file to record!"); return false; }
+        musicPlayer.startRecordOgg(true); // use microphone (for linein, pass in 'false')
         timer = 0;
         return true; // and continue
         }
     else if (phase == SM_Running) {
         // record for a while
+        // see the record_ogg::saveRecordedData() example
+        // round to 512 blocks, write using flushoneveryNblocks(thatmany,4)
         return ! wait_for(timer, RecordingLength);
         }
     else if (phase == SM_Finish) {
         // cleanup fixme
+        musicPlayer.stopRecordOgg();
+        // save data fixme
+        // do 512 blocks, then flushoneveryNblocks(whateverisleft, left/x)
+        record_to.next_available(); // we preincrement
         return false;
         }
     }
 
 boolean saying_hello(StateMachinePhase phase) {
-    static unsigned long timer = 0;
     if (phase == SM_Start) {
-        // start the sound fixme
-        timer = 0;
+        musicPlayer.startPlayingFile("hello.mp3"); // background
         return true; // and continue
         }
     else if (phase == SM_Running) {
-        return ! wait_for(timer, 1000); // fixme: when does the sound end?
+        return ! musicPlayer.stopped(); // while playing
         }
     else if (phase == SM_Finish) {
-        // cleanup fixme
+        // cleanup 
+        musicPlayer.stopPlaying();
         return false;
         }
     }
@@ -190,57 +268,7 @@ boolean ring_on_duration() {
     ring_sound.run();
     return ! wait_for(timer, 1000);
     }
-/*
-boolean saying_hello(boolean playing) {
-    // you have to tell us if you stopped early by passing false for playing
-    declare_machine(say_hello);
 
-    if (!playing) {
-        machine_from(say_hello).idx=0;
-        // need to tell player to stop playing...
-        return false; // not really relevant
-        }
-
-    else {
-        return machine_from(say_hello).run_once();
-        }
-    }
-
-boolean start_playing_hello(byte *x) {
-    // start playing the hello sound ...
-    return false; // we are immediately done
-    }
-
-boolean wait_for_done_playing(byte *x) {
-    boolean its_done = true; // actually false when the code gets written
-
-    // look for the player to tell us it's done with that sound (or error)...
-    return !its_done; // return true to keep checking
-    }
-
-
-boolean recording(boolean still_recording) {
-    // you have to tell us if you stopped early by passing false for still_recording
-    declare_machine(do_recording);
-
-    if (!still_recording) {
-        machine_from(do_recording).idx=0;
-        // need to tell player to stop playing...
-        return false; // not really relevant
-        }
-
-    else {
-        return machine_from(do_recording).run_once();
-        }
-    }
-
-boolean start_recording(byte *x) {
-    // start recording ...
-    // have to tell it a new recording number each time, I assume...
-    return false; // we are immediately done
-    }
-
-*/
 // Use this instead of delay.
 // Also, an example of a function for use in the sequences.
 // Convenient to use like: void xyz() { static unsigned long w; wait_for(&w, 2000) }
