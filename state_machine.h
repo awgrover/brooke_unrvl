@@ -196,6 +196,11 @@ template<const int ms> boolean sm_delay(StateMachine &sm) {
 
 template<int pin, int v> void sm_digitalWrite() { digitalWrite(pin, v); }
 
+template <int msg> void sm_msg() { Serial.println(msg); }
+template <const char *&msg> void sm_msg() { Serial.println(*msg); }
+template <const char msg[]> void sm_msg() { Serial.println(msg); }
+
+
 #define STATEMACHINE(machinename, firstaction) StateMachine machinename(_##firstaction##_xtion);
 
 template<int n>

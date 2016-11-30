@@ -8,19 +8,26 @@
     
 */
 
+/* Arduino "pro mini 328" https://www.adafruit.com/product/2378
+    5v/328
+    requires FTDI
+
+*/
 /* PIR https://www.adafruit.com/product/189 ?
     No library needed.
     Assuming HIGH on signal. may need 10K pullup on pir signal. retriggering off 
     Assuming stabilize times. Assuming analog: needs debounce. fixme
     Could change to edge-triggered-to-high interrupt driven
 */
-/* MP3 play/record https://www.adafruit.com/products/1381 ?
+/* MP3 play/record https://www.adafruit.com/products/1381
     https://github.com/adafruit/Adafruit_VS1053_Library/archive/master.zip
     SPI, so, Pins:
-        CLK -> 13, MISO -> 12, MOSI -> 11, CS -> 10, RST -> 9, DCS -> 8, CARDCS -> 4, DREQ -> 3
+        CLK -> 13, MISO -> 12, MOSI -> 11, CS -> 10, RST -> 9, XDCS(DCS) -> 8, SDCS(CARDCS) -> 4, DREQ -> 3
     Need:
         hello.mp3
         v44k1q05.img
+    Handset MIC to MIC+
+    Handset SPKR to LOUT
 
     oggvorbis doc: https://cdn-shop.adafruit.com/datasheets/VorbisEncoder170c.pdf
     The SD card is a separate SPI object!, e.g. SD.begin(cardseelectpin)
@@ -29,9 +36,9 @@
 // On for serial/development, 0 for no serial (so you can avoid serial)
 #define DEV 1
 
-#define OnHookPin 5
-#define RingerPin 13 /* fixme 3 */
-#define PIRPin 5 
+#define OnHookPin 5 // other side is +5, so onhook is LOW
+#define RingerPin 6 
+#define PIRPin 7
 // MP3
 // SPIpins fixed: 11,12,13 
 #define BREAKOUT_RESET  9      // VS1053 reset pin (output)
@@ -61,12 +68,16 @@ Adafruit_VS1053_FilePlayer musicPlayer(BREAKOUT_RESET, BREAKOUT_CS, BREAKOUT_DCS
 #include "state_machine.h"
 
 // ringer sound is about 30hz
-SIMPLESTATEAS(ring1, (sm_digitalWrite<RingerPin, HIGH>), pause1)
+extern const char ring_msg[];
+const char ring_msg[] = "BOB";
+SIMPLESTATEAS(ring1_deb, sm_msg<ring_msg>, ring1)
+// SIMPLESTATEAS(ring1_deb, (sm_digitalWrite<RingerPin, HIGH>), pause1)
+SIMPLESTATEAS(ring1, (sm_digitalWrite<RingerPin, LOW>), pause1)
 SIMPLESTATEAS(pause1, sm_delay<RingingDelay>, ring2)
-SIMPLESTATEAS(ring2, (sm_digitalWrite<RingerPin, LOW>), pause2)
+SIMPLESTATEAS(ring2, (sm_digitalWrite<RingerPin, HIGH>), pause2)
 SIMPLESTATEAS(pause2, sm_delay<RingingDelay>, ring1)
 
-STATEMACHINE(ring_sound, ring1)
+STATEMACHINE(ring_sound, ring1_deb)
 
 // But actual ring pattern is ringing, pause, ringing...
 SIMPLESTATE(ring_on_duration, ring_finish)
@@ -126,25 +137,48 @@ char oggimg[] = "v44k1q05.img"; // should be const, too bad
 void setup() {
     if (DEV) { while(!Serial) {}; Serial.begin(19200); Serial.println("Start"); }
     pinMode(RingerPin, OUTPUT);
-    digitalWrite(RingerPin, LOW);
     pinMode(PIRPin, INPUT);
+    pinMode(OnHookPin, INPUT);
+
+    // Tinkle
+    digitalWrite(RingerPin, HIGH);
+    digitalWrite(RingerPin, LOW);
+
+    // try to get by setup even if stuff is missing
 
     if (! musicPlayer.begin()) { Serial.println("VS1053 not found. pins?"); }
-    musicPlayer.setVolume(20,20); // lower is louder!
-    // If DREQ is on an interrupt pin (on uno, #2 or #3) we can do background audio playing
-    if (!musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT)) { Serial.println(F("DREQ pin is not an interrupt pin")); }
+    else {
+        musicPlayer.setVolume(20,20); // lower is louder!
+        // If DREQ is on an interrupt pin (on uno, #2 or #3) we can do background audio playing
+        if (!musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT)) { Serial.println(F("DREQ pin is not an interrupt pin")); }
+        }
 
     if (!SD.begin(CARDCS)) { Serial.println("SD card not found. pins? card?"); }
-    // fixme: have to do this each time ready to record?
-    if (! musicPlayer.prepareRecordOgg(oggimg)) { Serial.println("Couldn't load plugin!"); } // that's HIFI
-    record_to.next_available();
-    if (DEV) { Serial.print("Next recording ");Serial.println(record_to.name); }
+    else {
+        // fixme: have to do this each time ready to record?
+        if (! musicPlayer.prepareRecordOgg(oggimg)) { Serial.println("Couldn't load plugin!"); } // that's HIFI
+        else {
+            record_to.next_available();
+            if (DEV) { Serial.print("Next recording ");Serial.println(record_to.name); }
+            }
+        }
+
+    if (DEV) Serial.println("End of setup");
+
+    // tinkle
+    digitalWrite(RingerPin, HIGH);
+    digitalWrite(RingerPin, LOW);
+
     }
 
 void loop() { // tests
     // ring_sound.run();
     // ringing_pattern.run();
-    if (true) { // ring_the_phone
+    while(true) {
+        if (onhook()) ringing_pattern.run();
+        }
+        
+    if (false) { // ring_the_phone
         Serial.print("start ");  Serial.println(millis());
         if (!ring_the_phone(SM_Start)) { Serial.println("failed on sm_start"); }
         while(ring_the_phone(SM_Running)) {}; 
@@ -152,6 +186,14 @@ void loop() { // tests
         delay(2000);
         }
     // musicPlayer.sineTest(0x44, 500);
+    }
+
+void xxxloop() {
+    digitalWrite(RingerPin, LOW);
+    delay(300);
+    digitalWrite(RingerPin, HIGH);
+    delay(300);
+    Serial.println("Ring");
     }
 
 void xxloop() {
@@ -167,10 +209,10 @@ boolean wait_for_onhook() {
 
 boolean onhook() {
     static boolean is_onhook = true; // got to start somewhere
-    static int last_sample = HIGH;
+    static int last_sample = LOW;
     static unsigned long debounce_timer;
 
-    int now_sample = digitalRead(OnHookPin); // onhook = HIGH
+    int now_sample = digitalRead(OnHookPin); // onhook = LOW
 
     if (last_sample != now_sample) {
         // it changed, start/keep debouncing
@@ -180,10 +222,12 @@ boolean onhook() {
         }
 
     if ( debounce_timer > 0 && wait_for(debounce_timer, 0) ) { // ignores the 2nd arg
-        // timer was started and not done yet
-        is_onhook = now_sample == HIGH;
+        // timer was started is done
+        Serial.println(now_sample==LOW ? "onhook" : "offhook");
+        is_onhook = now_sample == LOW;
         }
 
+    Serial.print(now_sample);Serial.print(" ");Serial.print(is_onhook);Serial.print(" ");Serial.println();
     return is_onhook;
     }
 
@@ -222,6 +266,8 @@ boolean ring_the_phone(StateMachinePhase phase) {
 boolean record_response(StateMachinePhase phase) {
     static unsigned long timer = 0;
     static File recording;
+
+    const char *filename = "bob"; // next file name
 
     if (phase == SM_Start) {
         if (DEV) {Serial.print("Recording to "); Serial.println(record_to.name);}
