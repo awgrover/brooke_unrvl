@@ -17,6 +17,9 @@
     * setvolume doesn't seem to work. differential?
     * cleanup code
     * Help with output signal from mp3: pops/clicks: dc bias? agnd?
+    * use the FTDI to program the damn trinket:blink first
+        * test a Serial.print when NO serial.begin
+        * test a serial.print w/serial.begin
     * The mp3 library has a serial.print in it. damn it.
 */
 
