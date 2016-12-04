@@ -8,8 +8,16 @@
     Should it say something when the recording is done?
     
     todo
-    * init mp3 & sd interface
+    * "Attach at least one of the AGND pins to ground? " For line out the AGND is correct!"?
+    * mp3
+        # play sine wave
+        # play sound file
+            # short "hello"
+        * record sound & play it back
+    * setvolume doesn't seem to work. differential?
     * cleanup code
+    * Help with output signal from mp3: pops/clicks: dc bias? agnd?
+    * The mp3 library has a serial.print in it. damn it.
 */
 
 /* Arduino "pro mini 328" https://www.adafruit.com/product/2378
@@ -41,6 +49,8 @@
 
     oggvorbis doc: https://cdn-shop.adafruit.com/datasheets/VorbisEncoder170c.pdf
     The SD card is a separate SPI object!, e.g. SD.begin(cardseelectpin)
+
+    Getting pop/clicks: either differential output (put a cap in somewhere) or AGND...
 */
 /* Bell 
     is on RingerPin, which is the coil of a 5V/200mA relay: LOW closes the relay (relay 9--13) and "pings" the bell.
@@ -95,6 +105,7 @@ const int random_trigger_interval[] = { 1*60, 5*60 }; // 1 to 5 minutes (in seco
 #include <SD.h>
 Adafruit_VS1053_FilePlayer musicPlayer(BREAKOUT_RESET, BREAKOUT_CS, BREAKOUT_DCS, DREQ, CARDCS);
 
+const char hello_file_name[] = "hello.mp3";
 // Profile, 44khz, "good" quality. see datasheet.
 char oggimg[] = "v44k1q05.img"; // should be const, too bad, but can't
 #define RECBUFFSIZE 128  // 64 or 128 bytes.
@@ -176,8 +187,11 @@ struct {
 #endif
 
 void setup() {
-    if (DEV) { while(!Serial) {}; Serial.begin(115200); println(F("Start")); }
+    if (DEV) { while(!Serial) {}; Serial.begin(115200); println(F("Start")); } // will hang if DEV && no serial possible
     pinMode(RingerPin, OUTPUT);
+    // setting output on these pins seems to break it
+        // pinMode(BREAKOUT_CS, OUTPUT);
+        // pinMode(CARDCS, OUTPUT);
     pinMode(PIRPin, INPUT);
     pinMode(OnHookPin, INPUT);
     pinMode(RingNowButton, INPUT_PULLUP);
@@ -187,57 +201,61 @@ void setup() {
     delay(20);
     tinkle();
 
-    print("Using ");println(RandomTrigger==1 ? F("random trigger") : F("pir trigger"));
+    print(F("Using "));println(RandomTrigger==1 ? F("random trigger") : F("pir trigger"));
 
     // try to get by setup even if stuff is missing
 
     if (! musicPlayer.begin()) { println(F("VS1053 not found. pins?")); }
     else {
         musicPlayer.setVolume(20,20); // lower is louder!
-        musicPlayer.sineTest(0x44, 500); // 500ms of 0x44?
+        musicPlayer.sineTest(0x44, 150); // 250ms of 0x44 (68?). sync.  bit pattern I think...
+        musicPlayer.sineTest(0x66, 150);
         // If DREQ is on an interrupt pin (on uno, #2 or #3) we can do background audio playing
         if (!musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT)) { println(F("DREQ pin is not an interrupt pin")); }
         }
-
+  
     if (!SD.begin(CARDCS)) { println(F("SD card not found. pins? card?")); }
     else {
         // fixme: have to do this each time ready to record?
+
+        if (!SD.exists(hello_file_name)) { print(F("Doesn't exist: ")); println(hello_file_name); }
+
+        // FIXME: if you "prepare" it will disable playing
+        /*
+        print(F("loading "));print(oggimg);print(F(" "));println(millis());
         if (! musicPlayer.prepareRecordOgg(oggimg)) { println(F("Couldn't load plugin!")); } // that's HIFI
         else {
+            print(F("loaded "));println(millis());
             record_to.next_available();
             print(F("Next recording "));println(record_to.name);
             }
+        */
         }
-
-    println(F("End of setup"));
+  
+    debug_hello(500); // say something
 
     // 2nd tinkle means "running"
     tinkle();
-
-
+    println(F("End of setup"));
     }
 
+
 void loop() { // tests
-    static boolean oh = onhook(); // constantly poll. works.
+    onhook(); // need to constantly poll for debounce. works.
 
     // while( onhook() ) test_ringing_polarity();
 
-    // pir_change(); // fixme: needs some rework: on latches for 6 seconds..., no debounce
+    // pir_change(); // fixme: needs some rework: on latches for 6 seconds..., not debounce
 
-    // ring_sound.run(); // works
-    // ringing_pattern.run();
+    // while ( onhook() ) ring_sound.run(); // works
 
     // while( onhook() ) { ringing_pattern.run();  } digitalWrite(RingerPin, HIGH); // works
 
-    while( onhook() ) { static boolean x=false; if (x!=wait_for_victim()) { x=!x; print(F("Victim? ")); println(x); if(x) tinkle(); } }
+    // while( onhook() ) { static boolean x=false; if (x!=wait_for_victim()) { x=!x; print(F("Victim? ")); println(x); if(x) tinkle(); } } // works
         
-    if (false) { // ring_the_phone
-        print(F("start "));  println(millis());
-        if (!ring_the_phone(SM_Start)) { println(F("failed on sm_start")); }
-        while(ring_the_phone(SM_Running)) {}; 
-        print(F("Stop ")); println(millis()); 
-        delay(2000);
-        }
+    // while ( !onhook() ) { println(F("beeep")); musicPlayer.sineTest(0x44, 250); println(musicPlayer.playingMusic); delay(300); musicPlayer.sineTest(0x22, 250); delay(300); } // works w/pops/clicks
+
+    if (!onhook()) { delay(300); debug_hello(3000); }
     }
 
 void tinkle() {
@@ -390,17 +408,31 @@ boolean record_response(StateMachinePhase phase) {
         }
     }
 
+boolean debug_hello(int duration) {
+    unsigned long timeout = millis() + duration;
+
+    saying_hello(SM_Start);
+    while (saying_hello(SM_Running)) { if (millis() > timeout) {println("timeout"); break;}; onhook(); }
+    saying_hello(SM_Finish);
+    }
+
 boolean saying_hello(StateMachinePhase phase) {
     if (phase == SM_Start) {
-        musicPlayer.startPlayingFile("hello.mp3"); // background
+        print(F("start hello "));println(millis());
+        if (!musicPlayer.startPlayingFile(hello_file_name)) { // background
+            println(F("startPlayingFile failed"));
+            return false;
+            }
         return true; // and continue
         }
     else if (phase == SM_Running) {
         return ! musicPlayer.stopped(); // while playing
         }
     else if (phase == SM_Finish) {
+        print(F("end hello "));println(millis());
         // cleanup 
         musicPlayer.stopPlaying();
+        print(F("closed "));println(millis());
         return false;
         }
     }
