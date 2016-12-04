@@ -9,8 +9,6 @@
     
     todo
     * init mp3 & sd interface
-    * Change to "ring every random(1-10 minutes)
-    * add a "ring now" button. Steal from node. pin 
     * cleanup code
 */
 
@@ -26,6 +24,10 @@
     Could change to edge-triggered-to-high interrupt driven
     Docs say: "delay" is 2-4 or something. BUT we see 6 to 200!
     AND, once triggered, motion keeps it triggerd, and stil 6secs+ stays on
+*/
+/* Random ring interval
+    Instead of using the PIR, set RandomTrigger to 1 below.
+    It will randomly "trigger" every so often (see random_trigger_interval)
 */
 /* MP3 play/record https://www.adafruit.com/products/1381
     https://github.com/adafruit/Adafruit_VS1053_Library/archive/master.zip
@@ -52,6 +54,9 @@
 // On for serial/development, 0 for no serial (so you can avoid serial)
 #define DEV 1
 
+//
+// PINS
+//
 #define RingNowButton 2 // an external momentary to cause it to ring now for demo
 #define DREQ 3       // VS1053 Data request, ideally an Interrupt pin. 2 or 3 on UNO
 #define CARDCS 4     // VS1053-breakout SDCard select pin
@@ -61,20 +66,29 @@
 #define BREAKOUT_DCS    8      // VS1053 Data/command select pin (output)
 #define BREAKOUT_RESET  9      // VS1053 all reset pin (output)
 #define BREAKOUT_CS     10     // VS1053 chip select pin (output)
-// SPIpins fixed: 11,12,13 
+// SPIpins fixed (hardware): 
+// CLK -> 13
+// MISO -> 12
+// MOSI -> 11
 
 // ringer sound is about 30hz
 #define RingerFrequency 38 // hertz. debug output slows this considerably
 #define RingingDelay  (1000 / RingerFrequency) // because of rounding we'll be off a bit.
 
+// Ringing pattern
 #define RingingDuration 1500   // millis
 #define BetweenRings  1000     // millis
+
 #define StopRingingAfter (30 * 1000) // millis
 #define RecordingLength (10*1000) // millis
 #define BetweenCalls (30 * 1000) // millis
+
 #define HookDebounce 10 // millis to wait for a steady value
 #define PIRDebounce 20 // PIR also needs debounce (for "on")
 #define PIRStabilize (30*1000) // PIR takes some initial time to stabilize on power up
+
+#define RandomTrigger 1 // 0 for PIR, 1 for random_trigger_interval
+const int random_trigger_interval[] = { 1*60, 5*60 }; // 1 to 5 minutes (in seconds) fixme
 
 #include <SPI.h>
 #include <Adafruit_VS1053.h>
@@ -169,11 +183,11 @@ void setup() {
     pinMode(RingNowButton, INPUT_PULLUP);
 
     // Tinkle at startup
-    digitalWrite(RingerPin, HIGH);
+    digitalWrite(RingerPin, HIGH); // reset
     delay(20);
-    digitalWrite(RingerPin, LOW);
-    delay(30);
-    digitalWrite(RingerPin, HIGH);
+    tinkle();
+
+    print("Using ");println(RandomTrigger==1 ? F("random trigger") : F("pir trigger"));
 
     // try to get by setup even if stuff is missing
 
@@ -198,9 +212,7 @@ void setup() {
     println(F("End of setup"));
 
     // 2nd tinkle means "running"
-    digitalWrite(RingerPin, LOW);
-    delay(30);
-    digitalWrite(RingerPin, HIGH);
+    tinkle();
 
 
     }
@@ -215,7 +227,9 @@ void loop() { // tests
     // ring_sound.run(); // works
     // ringing_pattern.run();
 
-    while( onhook() ) { ringing_pattern.run();  } // works
+    // while( onhook() ) { ringing_pattern.run();  } digitalWrite(RingerPin, HIGH); // works
+
+    while( onhook() ) { static boolean x=false; if (x!=wait_for_victim()) { x=!x; print(F("Victim? ")); println(x); if(x) tinkle(); } }
         
     if (false) { // ring_the_phone
         print(F("start "));  println(millis());
@@ -224,6 +238,12 @@ void loop() { // tests
         print(F("Stop ")); println(millis()); 
         delay(2000);
         }
+    }
+
+void tinkle() {
+    digitalWrite(RingerPin, LOW);
+    delay(30);
+    digitalWrite(RingerPin, HIGH);
     }
 
 void test_ringing_polarity() {
@@ -243,21 +263,6 @@ void test_ringing_polarity() {
     delay(400);
     digitalWrite(RingerPin, a);
     delay(400);
-    }
-
-void xxxloop() {
-    digitalWrite(RingerPin, LOW);
-    delay(300);
-    digitalWrite(RingerPin, HIGH);
-    delay(300);
-    println(F("Ring"));
-    }
-
-void xxloop() {
-    the_system.run();
-    // these debounce, so let them poll
-    onhook();
-    motion();
     }
 
 void pir_change() {
@@ -296,6 +301,25 @@ boolean onhook() {
     return is_onhook;
     }
 
+boolean use_random_trigger_interval() {
+    // goes true at some random interval
+    static unsigned long timer = 0;
+
+    if (timer == 0) { // we expired in the past, and now someone wants to use us again
+        int seconds = random(random_trigger_interval[0], random_trigger_interval[1]);
+        print(F("ring in "));print(seconds);println();
+        timer = seconds * 1000ul + millis();
+        return false;
+        }
+
+    if (millis() > timer) {
+        timer = 0; // for next time we are used
+        return true;
+        }
+
+    return false;
+    }
+        
 boolean motion() {
     // the PIR only has "bounce" at turn on...
     static int has_motion = false;
@@ -317,7 +341,13 @@ boolean motion() {
 boolean wait_for_victim() {
     // shouldn't have to worry about onhook here, but it makes it clear
     int ring_now = digitalRead(RingNowButton) == LOW;
-    return !( onhook() && ( ring_now || motion() ) ); // we are waiting for both
+    boolean the_trigger = // one of motion or random:
+    #if RandomTrigger==0
+        motion();
+    #else
+        use_random_trigger_interval();
+    #endif
+    return !( onhook() && ( ring_now || the_trigger ) ); // we are waiting for both
     }
 
 boolean ring_the_phone(StateMachinePhase phase) {
