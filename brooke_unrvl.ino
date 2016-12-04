@@ -10,7 +10,7 @@
     todo
     * init mp3 & sd interface
     * Change to "ring every random(1-10 minutes)
-    * add a "ring now" button.
+    * add a "ring now" button. Steal from node. pin 
     * cleanup code
 */
 
@@ -41,22 +41,27 @@
     The SD card is a separate SPI object!, e.g. SD.begin(cardseelectpin)
 */
 /* Bell 
-    is on RingerPin, which is the coil of a relay: LOW closes the relay (relay 9--13) and "pings" the bell
+    is on RingerPin, which is the coil of a 5V/200mA relay: LOW closes the relay (relay 9--13) and "pings" the bell.
+    9 is 48V, 13 is bell, otherside of bell is ground.
+    Snubber diode across it.
+*/
+/* Ring Now button
+    For demo, use a little momentary on RingNowButton. Should be a normal open. The other side to ground.
 */
 
 // On for serial/development, 0 for no serial (so you can avoid serial)
 #define DEV 1
 
+#define RingNowButton 2 // an external momentary to cause it to ring now for demo
+#define DREQ 3       // VS1053 Data request, ideally an Interrupt pin. 2 or 3 on UNO
+#define CARDCS 4     // VS1053-breakout SDCard select pin
 #define OnHookPin 5 // other side is +5, so onhook is LOW, need pulldown
 #define RingerPin 6 
 #define PIRPin 7
-// MP3
-// SPIpins fixed: 11,12,13 
-#define BREAKOUT_RESET  9      // VS1053 reset pin (output)
-#define BREAKOUT_CS     10     // VS1053 chip select pin (output)
 #define BREAKOUT_DCS    8      // VS1053 Data/command select pin (output)
-#define CARDCS 4     // Card chip select pin
-#define DREQ 3       // VS1053 Data request, ideally an Interrupt pin. 2 or 3 on UNO
+#define BREAKOUT_RESET  9      // VS1053 all reset pin (output)
+#define BREAKOUT_CS     10     // VS1053 chip select pin (output)
+// SPIpins fixed: 11,12,13 
 
 // ringer sound is about 30hz
 #define RingerFrequency 38 // hertz. debug output slows this considerably
@@ -87,9 +92,7 @@ File recording;
 #include "state_machine.h"
 
 extern const char ring_msg[];
-const char ring_msg[] = "BOB"; // debug example. FIXME
-SIMPLESTATEAS(ring1_deb, sm_msg<ring_msg>, ring1)
-// SIMPLESTATEAS(ring1_deb, (sm_digitalWrite<RingerPin, HIGH>), pause1)
+SIMPLESTATEAS(ring1_deb, (sm_digitalWrite<RingerPin, HIGH>), pause1)
 SIMPLESTATEAS(ring1, (sm_digitalWrite<RingerPin, LOW>), pause1)
 SIMPLESTATEAS(pause1, sm_delay<RingingDelay>, ring2)
 SIMPLESTATEAS(ring2, (sm_digitalWrite<RingerPin, HIGH>), pause2)
@@ -163,6 +166,7 @@ void setup() {
     pinMode(RingerPin, OUTPUT);
     pinMode(PIRPin, INPUT);
     pinMode(OnHookPin, INPUT);
+    pinMode(RingNowButton, INPUT_PULLUP);
 
     // Tinkle at startup
     digitalWrite(RingerPin, HIGH);
@@ -312,7 +316,8 @@ boolean motion() {
 
 boolean wait_for_victim() {
     // shouldn't have to worry about onhook here, but it makes it clear
-    return !( onhook() && motion() ); // we are waiting for both
+    int ring_now = digitalRead(RingNowButton) == LOW;
+    return !( onhook() && ( ring_now || motion() ) ); // we are waiting for both
     }
 
 boolean ring_the_phone(StateMachinePhase phase) {
