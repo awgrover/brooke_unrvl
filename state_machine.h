@@ -78,7 +78,7 @@ struct StateMachine {
       }
 
     boolean run() {
-        debugm("Step action ");debugm((long)current);debugm(" @");debugm(phase);debugm("...");
+        // debugm("Step action ");debugm((long)current);debugm(" @");debugm(phase);debugm("...");
 
         // someone might try to run us after we signaled "all done"
         if (current == NULL) {
@@ -89,11 +89,11 @@ struct StateMachine {
         StateXtionFnPtr next_state = (*current)(*this);
 
         if (next_state != current) { 
-            debugm(" !->");debugm((long)next_state);debugm("\n"); 
+            // debugm(" !->");debugm((long)next_state);debugm("\n"); 
             }
         else { 
             phase = SM_Running;
-            debugm(" again\n"); 
+            // debugm(" again\n"); 
             }
 
         // update
@@ -122,15 +122,43 @@ template<void fn(StateMachine &sm, StateMachinePhase phase)> inline boolean acti
 template<void fn(StateMachine &sm)> inline boolean action_function_wrapper(StateMachine &sm) { if(sm.phase != SM_Finish) {fn(sm);} return false;}
 template<void fn()> inline boolean action_function_wrapper(StateMachine &sm) { if(sm.phase != SM_Finish) {fn();} return false; }
 
+inline void debug_time() { debugm("[");debugm(millis());debugm("] "); }
+inline void debug_phase(StateMachine &sm) { 
+  #if DEBUG==1
+    static const char *phasename[] = { "SM_Start", "SM_Running", "SM_Finish" };
+    debugm(phasename[ sm.phase ]); debugm(" ");
+  #endif
+  }
+
 StateXtionFnPtr_ _NULL_xtion(StateMachine &sm) { return NULL; }
 const StateXtionFnPtr_ NOPREDS[] = { (StateXtionFnPtr_) NULL };
 #define XTIONNAME(action) _##action##_xtion
-#define SIMPLESTATE(action, next_state) StateXtionFnPtr_ _##action##_xtion(StateMachine &sm) { \
-    return one_step(sm, action_function_wrapper<action>, _##action##_xtion, NOPREDS, _##next_state##_xtion); \
+#if DEBUG==1
+  #define SIMPLESTATE(action, next_state) StateXtionFnPtr_ _##action##_xtion(StateMachine &sm) { \
+      debug_time(); debug_phase(sm); debugm(F(#action)); debugm(F("\n")); \
+      auto rez = one_step(sm, action_function_wrapper<action>, _##action##_xtion, NOPREDS, _##next_state##_xtion); \
+      /* debugm(F("  -> ")); debugm(rez == _##action##_xtion ? #action : #next_state);debugm(F("\n")); */ \
+      return rez; \
+      }
+#else
+    #define SIMPLESTATE(action, next_state) StateXtionFnPtr_ _##action##_xtion(StateMachine &sm) { \
+      return one_step(sm, action_function_wrapper<action>, _##action##_xtion, NOPREDS, _##next_state##_xtion); \
     }
-#define SIMPLESTATEAS(name, action, next_state) StateXtionFnPtr_ _##name##_xtion(StateMachine &sm) { \
+#endif
+
+#if DEBUG==1
+  #define SIMPLESTATEAS(name, action, next_state) StateXtionFnPtr_ _##name##_xtion(StateMachine &sm) { \
+      debug_time(); debug_phase(sm); debugm(F(#name":"#action)); debugm(F("\n")); \
+      auto rez = one_step(sm, action_function_wrapper<action>, _##name##_xtion, NOPREDS, _##next_state##_xtion); \
+      /* debugm(F("  -> ")); debugm(rez == _##name##_xtion ? F(#name":"#action) : F(#next_state)); debugm(F("\n")); */ \
+      return rez; \
+      }
+#else
+  #define SIMPLESTATEAS(name, action, next_state) StateXtionFnPtr_ _##name##_xtion(StateMachine &sm) { \
     return one_step(sm, action_function_wrapper<action>, _##name##_xtion, NOPREDS, _##next_state##_xtion); \
     }
+#endif
+
 #define STATEAS(name, action, next_state) StateXtionFnPtr_ _##name##_xtion(StateMachine &sm) { \
     static const ActionFnPtr _action = action_function_wrapper<action>; \
     static const StateXtionFnPtr next_state_xtion = _##next_state##_xtion; \

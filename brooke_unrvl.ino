@@ -5,7 +5,13 @@
     "Tune" the area the motion-detect says in relation to the phone/room.
 
     Should it make noise if left off hook too long? Of if nothing moves for too long?
+    Should it say something when the recording is done?
     
+    todo
+    * init mp3 & sd interface
+    * Change to "ring every random(1-10 minutes)
+    * add a "ring now" button.
+    * cleanup code
 */
 
 /* Arduino "pro mini 328" https://www.adafruit.com/product/2378
@@ -13,11 +19,13 @@
     requires FTDI
 
 */
-/* PIR https://www.adafruit.com/product/189 ?
-    No library needed.
-    Assuming HIGH on signal. may need 10K pullup on pir signal. retriggering off 
+/* PIR https://www.adafruit.com/product/189
+    No library needed. "digital
+    HIGH on signal/motion. may need 10K pullup on pir signal. Jumper to H (retrigger on)
     Assuming stabilize times. Assuming analog: needs debounce. fixme
     Could change to edge-triggered-to-high interrupt driven
+    Docs say: "delay" is 2-4 or something. BUT we see 6 to 200!
+    AND, once triggered, motion keeps it triggerd, and stil 6secs+ stays on
 */
 /* MP3 play/record https://www.adafruit.com/products/1381
     https://github.com/adafruit/Adafruit_VS1053_Library/archive/master.zip
@@ -32,11 +40,14 @@
     oggvorbis doc: https://cdn-shop.adafruit.com/datasheets/VorbisEncoder170c.pdf
     The SD card is a separate SPI object!, e.g. SD.begin(cardseelectpin)
 */
+/* Bell 
+    is on RingerPin, which is the coil of a relay: LOW closes the relay (relay 9--13) and "pings" the bell
+*/
 
 // On for serial/development, 0 for no serial (so you can avoid serial)
 #define DEV 1
 
-#define OnHookPin 5 // other side is +5, so onhook is LOW
+#define OnHookPin 5 // other side is +5, so onhook is LOW, need pulldown
 #define RingerPin 6 
 #define PIRPin 7
 // MP3
@@ -47,11 +58,12 @@
 #define CARDCS 4     // Card chip select pin
 #define DREQ 3       // VS1053 Data request, ideally an Interrupt pin. 2 or 3 on UNO
 
-#define RingerFrequency 38 // hertz
-#define RingingDelay  (1000 / 38) // because of rounding we'll be off a bit.
+// ringer sound is about 30hz
+#define RingerFrequency 38 // hertz. debug output slows this considerably
+#define RingingDelay  (1000 / RingerFrequency) // because of rounding we'll be off a bit.
 
-#define RingingDuration 1000   // millis
-#define BetweenRings  1500     // millis
+#define RingingDuration 1500   // millis
+#define BetweenRings  1000     // millis
 #define StopRingingAfter (30 * 1000) // millis
 #define RecordingLength (10*1000) // millis
 #define BetweenCalls (30 * 1000) // millis
@@ -64,12 +76,18 @@
 #include <SD.h>
 Adafruit_VS1053_FilePlayer musicPlayer(BREAKOUT_RESET, BREAKOUT_CS, BREAKOUT_DCS, DREQ, CARDCS);
 
+// Profile, 44khz, "good" quality. see datasheet.
+char oggimg[] = "v44k1q05.img"; // should be const, too bad, but can't
+#define RECBUFFSIZE 128  // 64 or 128 bytes.
+uint8_t recording_buffer[RECBUFFSIZE];
+File recording;
+
 // I'm using a non-blocking sequence tool, so we can respond to pickup/hangup, etc.
+#define DEBUG 0
 #include "state_machine.h"
 
-// ringer sound is about 30hz
 extern const char ring_msg[];
-const char ring_msg[] = "BOB";
+const char ring_msg[] = "BOB"; // debug example. FIXME
 SIMPLESTATEAS(ring1_deb, sm_msg<ring_msg>, ring1)
 // SIMPLESTATEAS(ring1_deb, (sm_digitalWrite<RingerPin, HIGH>), pause1)
 SIMPLESTATEAS(ring1, (sm_digitalWrite<RingerPin, LOW>), pause1)
@@ -132,60 +150,95 @@ struct {
         
     } record_to;
 
-char oggimg[] = "v44k1q05.img"; // should be const, too bad
+#if DEV==1
+    #define print(msg) Serial.print(msg)
+    #define println(msg) Serial.println(msg)
+#else
+    #define print(msg)
+    #define println(msg)
+#endif
 
 void setup() {
-    if (DEV) { while(!Serial) {}; Serial.begin(19200); Serial.println("Start"); }
+    if (DEV) { while(!Serial) {}; Serial.begin(115200); println(F("Start")); }
     pinMode(RingerPin, OUTPUT);
     pinMode(PIRPin, INPUT);
     pinMode(OnHookPin, INPUT);
 
-    // Tinkle
+    // Tinkle at startup
     digitalWrite(RingerPin, HIGH);
+    delay(20);
     digitalWrite(RingerPin, LOW);
+    delay(30);
+    digitalWrite(RingerPin, HIGH);
 
     // try to get by setup even if stuff is missing
 
-    if (! musicPlayer.begin()) { Serial.println("VS1053 not found. pins?"); }
+    if (! musicPlayer.begin()) { println(F("VS1053 not found. pins?")); }
     else {
         musicPlayer.setVolume(20,20); // lower is louder!
+        musicPlayer.sineTest(0x44, 500); // 500ms of 0x44?
         // If DREQ is on an interrupt pin (on uno, #2 or #3) we can do background audio playing
-        if (!musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT)) { Serial.println(F("DREQ pin is not an interrupt pin")); }
+        if (!musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT)) { println(F("DREQ pin is not an interrupt pin")); }
         }
 
-    if (!SD.begin(CARDCS)) { Serial.println("SD card not found. pins? card?"); }
+    if (!SD.begin(CARDCS)) { println(F("SD card not found. pins? card?")); }
     else {
         // fixme: have to do this each time ready to record?
-        if (! musicPlayer.prepareRecordOgg(oggimg)) { Serial.println("Couldn't load plugin!"); } // that's HIFI
+        if (! musicPlayer.prepareRecordOgg(oggimg)) { println(F("Couldn't load plugin!")); } // that's HIFI
         else {
             record_to.next_available();
-            if (DEV) { Serial.print("Next recording ");Serial.println(record_to.name); }
+            print(F("Next recording "));println(record_to.name);
             }
         }
 
-    if (DEV) Serial.println("End of setup");
+    println(F("End of setup"));
 
-    // tinkle
-    digitalWrite(RingerPin, HIGH);
+    // 2nd tinkle means "running"
     digitalWrite(RingerPin, LOW);
+    delay(30);
+    digitalWrite(RingerPin, HIGH);
+
 
     }
 
 void loop() { // tests
-    // ring_sound.run();
+    static boolean oh = onhook(); // constantly poll. works.
+
+    // while( onhook() ) test_ringing_polarity();
+
+    // pir_change(); // fixme: needs some rework: on latches for 6 seconds..., no debounce
+
+    // ring_sound.run(); // works
     // ringing_pattern.run();
-    while(true) {
-        if (onhook()) ringing_pattern.run();
-        }
+
+    while( onhook() ) { ringing_pattern.run();  } // works
         
     if (false) { // ring_the_phone
-        Serial.print("start ");  Serial.println(millis());
-        if (!ring_the_phone(SM_Start)) { Serial.println("failed on sm_start"); }
+        print(F("start "));  println(millis());
+        if (!ring_the_phone(SM_Start)) { println(F("failed on sm_start")); }
         while(ring_the_phone(SM_Running)) {}; 
-        Serial.print("Stop "); Serial.println(millis()); 
+        print(F("Stop ")); println(millis()); 
         delay(2000);
         }
-    // musicPlayer.sineTest(0x44, 500);
+    }
+
+void test_ringing_polarity() {
+    // to test the bell polarity
+    // which way is "ping"?
+    // HLH..L.. would be ping..ping for low
+    // but pingping...pingping for high
+
+    // LOW ought to be "close relay"
+    int a=LOW, b=HIGH;
+    digitalWrite(RingerPin, b);
+    delay(100);
+    digitalWrite(RingerPin, a);
+    delay(100);
+    digitalWrite(RingerPin, b);
+
+    delay(400);
+    digitalWrite(RingerPin, a);
+    delay(400);
     }
 
 void xxxloop() {
@@ -193,7 +246,7 @@ void xxxloop() {
     delay(300);
     digitalWrite(RingerPin, HIGH);
     delay(300);
-    Serial.println("Ring");
+    println(F("Ring"));
     }
 
 void xxloop() {
@@ -203,12 +256,20 @@ void xxloop() {
     motion();
     }
 
+void pir_change() {
+    // fixme:this was debug...
+    static int last = false;
+    int now = digitalRead(PIRPin);
+    if (now != last) { println(now); }
+    last=now;
+    }
+
 boolean wait_for_onhook() { 
     return ! onhook(); // we are waiting for it
     }
 
 boolean onhook() {
-    static boolean is_onhook = true; // got to start somewhere
+    static boolean is_onhook = true; // got to start somewhere, true and LOW
     static int last_sample = LOW;
     static unsigned long debounce_timer;
 
@@ -216,6 +277,7 @@ boolean onhook() {
 
     if (last_sample != now_sample) {
         // it changed, start/keep debouncing
+        // print(now_sample);print(F(" "));print(is_onhook);print(F(" "));println();
         debounce_timer = 0ul;
         wait_for(debounce_timer,  HookDebounce); // starts it (sets debounce_timer) 
         last_sample = now_sample;
@@ -223,11 +285,10 @@ boolean onhook() {
 
     if ( debounce_timer > 0 && wait_for(debounce_timer, 0) ) { // ignores the 2nd arg
         // timer was started is done
-        Serial.println(now_sample==LOW ? "onhook" : "offhook");
+        println(now_sample==LOW ? "onhook" : "offhook");
         is_onhook = now_sample == LOW;
         }
 
-    Serial.print(now_sample);Serial.print(" ");Serial.print(is_onhook);Serial.print(" ");Serial.println();
     return is_onhook;
     }
 
@@ -265,29 +326,30 @@ boolean ring_the_phone(StateMachinePhase phase) {
 
 boolean record_response(StateMachinePhase phase) {
     static unsigned long timer = 0;
-    static File recording;
 
     const char *filename = "bob"; // next file name
 
     if (phase == SM_Start) {
-        if (DEV) {Serial.print("Recording to "); Serial.println(record_to.name);}
-        recording = SD.open(filename, FILE_WRITE);
-        if (! recording) { Serial.println("Couldn't open file to record!"); return false; }
+        print(F("Recording to ")); println(record_to.name);
+        recording = SD.open(filename, FILE_WRITE); // FIXME
+        if (! recording) { println(F("Couldn't open file to record!")); return false; }
         musicPlayer.startRecordOgg(true); // use microphone (for linein, pass in 'false')
         timer = 0;
         return true; // and continue
         }
     else if (phase == SM_Running) {
         // record for a while
-        // see the record_ogg::saveRecordedData() example
-        // round to 512 blocks, write using flushoneveryNblocks(thatmany,4)
+        uint16_t ct = saveRecordedData(true);
+        print(F("sound "));println(ct);
         return ! wait_for(timer, RecordingLength);
         }
     else if (phase == SM_Finish) {
         // cleanup fixme
         musicPlayer.stopRecordOgg();
-        // save data fixme
-        // do 512 blocks, then flushoneveryNblocks(whateverisleft, left/x)
+        uint16_t ct = saveRecordedData(false);
+        print(F("sound final "));println(ct);
+        recording.close();
+
         record_to.next_available(); // we preincrement
         return false;
         }
@@ -315,6 +377,85 @@ boolean ring_on_duration() {
     return ! wait_for(timer, 1000);
     }
 
+uint16_t saveRecordedData(boolean isrecord) {
+    /*************************************************** 
+      This is an example for the Adafruit VS1053 Codec Breakout
+
+      Designed specifically to work with the Adafruit VS1053 Codec Breakout 
+      ----> https://www.adafruit.com/products/1381
+
+      Adafruit invests time and resources providing this open source code, 
+      please support Adafruit and open-source hardware by purchasing 
+      products from Adafruit!
+
+      Written by Limor Fried/Ladyada for Adafruit Industries.  
+      BSD license, all text above must be included in any redistribution
+     ****************************************************/
+  uint16_t written = 0;
+  
+    // read how many words are waiting for us
+  uint16_t wordswaiting = musicPlayer.recordedWordsWaiting();
+  
+  // FIXME: could redo this to do 512byte blocks, period. and then cleanup
+
+  // try to process 256 words (512 bytes) at a time, for best speed
+  while (wordswaiting > 256) {
+    //print(F("Waiting: ")); println(wordswaiting);
+    // for example 128 bytes x 4 loops = 512 bytes
+    for (int x=0; x < 512/RECBUFFSIZE; x++) {
+      // fill the buffer!
+      for (uint16_t addr=0; addr < RECBUFFSIZE; addr+=2) {
+        uint16_t t = musicPlayer.recordedReadWord();
+        //println(t, HEX);
+        recording_buffer[addr] = t >> 8; 
+        recording_buffer[addr+1] = t;
+      }
+      if (! recording.write(recording_buffer, RECBUFFSIZE)) {
+            print(F("Couldn't write ")); println(RECBUFFSIZE); 
+            while (1);
+      }
+    }
+    // flush 512 bytes at a time
+    recording.flush();
+    written += 256;
+    wordswaiting -= 256;
+  }
+  
+  wordswaiting = musicPlayer.recordedWordsWaiting();
+  if (!isrecord) {
+    print(wordswaiting); println(F(" remaining"));
+    // wrapping up the recording!
+    uint16_t addr = 0;
+    for (int x=0; x < wordswaiting-1; x++) {
+      // fill the buffer!
+      uint16_t t = musicPlayer.recordedReadWord();
+      recording_buffer[addr] = t >> 8; 
+      recording_buffer[addr+1] = t;
+      if (addr > RECBUFFSIZE) {
+          if (! recording.write(recording_buffer, RECBUFFSIZE)) {
+                println(F("Couldn't write!"));
+                while (1);
+          }
+          recording.flush();
+          addr = 0;
+      }
+    }
+    if (addr != 0) {
+      if (!recording.write(recording_buffer, addr)) {
+        println(F("Couldn't write!")); while (1);
+      }
+      written += addr;
+    }
+    musicPlayer.sciRead(VS1053_SCI_AICTRL3);
+    if (! (musicPlayer.sciRead(VS1053_SCI_AICTRL3) & _BV(2))) {
+       recording.write(musicPlayer.recordedReadWord() & 0xFF);
+       written++;
+    }
+    recording.flush();
+  }
+
+  return written;
+}
 // Use this instead of delay.
 // Also, an example of a function for use in the sequences.
 // Convenient to use like: void xyz() { static unsigned long w; wait_for(&w, 2000) }
@@ -326,12 +467,12 @@ boolean wait_for(byte *state, long unsigned int wait) {
   // true on expire
   unsigned long *timer = (unsigned long *)state;
   if (*timer == 0) {
-      // Serial.print(millis()); Serial.print(": "); Serial.print("Start delay "); Serial.println(wait); 
+      // print(millis()); print(F(": ")); print(F("Start delay ")); println(wait); 
       *timer = wait + millis();
       return false;
   }
   else if (*timer <= millis()) {
-    // Serial.print(millis()); Serial.print(": "); Serial.print("Finish delay "); Serial.println(wait);
+    // print(millis()); print(F(": ")); print(F("Finish delay ")); println(wait);
     *timer = 0;
     return true;
   }
