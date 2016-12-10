@@ -63,12 +63,12 @@ struct StateMachine {
     StateXtionFnPtr current;
     // User data:
     union {
-      unsigned long user_long;
+      unsigned long user_ulong;
       int user_int;
       };
     // first state will be SM_Start
     StateMachine(StateXtionFnPtr startstate) : current(startstate), phase(SM_Start) {
-      debugm("SM_Start, SM_Running, SM_Finish\n"); debugm(SM_Start);debugm(", "); debugm( SM_Running);debugm(", "); debugm( SM_Finish);debugm("\n");
+      // *bad idea* debugm("SM_Start, SM_Running, SM_Finish\n"); debugm(SM_Start);debugm(", "); debugm( SM_Running);debugm(", "); debugm( SM_Finish);debugm("\n");
       }
 
     void restart( StateXtionFnPtr_  xtion) {
@@ -132,42 +132,27 @@ inline void debug_phase(StateMachine &sm) {
 
 StateXtionFnPtr_ _NULL_xtion(StateMachine &sm) { return NULL; }
 const StateXtionFnPtr_ NOPREDS[] = { (StateXtionFnPtr_) NULL };
+
 #define XTIONNAME(action) _##action##_xtion
-#if DEBUG==1
-  #define SIMPLESTATE(action, next_state) StateXtionFnPtr_ _##action##_xtion(StateMachine &sm) { \
-      debug_time(); debug_phase(sm); debugm(F(#action)); debugm(F("\n")); \
-      auto rez = one_step(sm, action_function_wrapper<action>, _##action##_xtion, NOPREDS, _##next_state##_xtion); \
-      /* debugm(F("  -> ")); debugm(rez == _##action##_xtion ? #action : #next_state);debugm(F("\n")); */ \
-      return rez; \
-      }
-#else
-    #define SIMPLESTATE(action, next_state) StateXtionFnPtr_ _##action##_xtion(StateMachine &sm) { \
-      return one_step(sm, action_function_wrapper<action>, _##action##_xtion, NOPREDS, _##next_state##_xtion); \
+#define SIMPLESTATE(action, next_state) StateXtionFnPtr_ _##action##_xtion(StateMachine &sm) { \
+    if (DEBUG && sm.phase != SM_Running) {debug_time(); debug_phase(sm); debugm(F(#action)); debugm(F("\n"));} \
+    return one_step(sm, action_function_wrapper<action>, _##action##_xtion, NOPREDS, _##next_state##_xtion); \
     }
-#endif
-
-#if DEBUG==1
-  #define SIMPLESTATEAS(name, action, next_state) StateXtionFnPtr_ _##name##_xtion(StateMachine &sm) { \
-      debug_time(); debug_phase(sm); debugm(F(#name":"#action)); debugm(F("\n")); \
-      auto rez = one_step(sm, action_function_wrapper<action>, _##name##_xtion, NOPREDS, _##next_state##_xtion); \
-      /* debugm(F("  -> ")); debugm(rez == _##name##_xtion ? F(#name":"#action) : F(#next_state)); debugm(F("\n")); */ \
-      return rez; \
-      }
-#else
-  #define SIMPLESTATEAS(name, action, next_state) StateXtionFnPtr_ _##name##_xtion(StateMachine &sm) { \
-    return one_step(sm, action_function_wrapper<action>, _##name##_xtion, NOPREDS, _##next_state##_xtion); \
-    }
-#endif
-
+#define SIMPLESTATEAS(name, action, next_state) StateXtionFnPtr_ _##name##_xtion(StateMachine &sm) { \
+  if (DEBUG && sm.phase != SM_Running) {debug_time(); debug_phase(sm); debugm(F(#name":"#action)); debugm(F("\n"));} \
+  return one_step(sm, action_function_wrapper<action>, _##name##_xtion, NOPREDS, _##next_state##_xtion); \
+  }
 #define STATEAS(name, action, next_state) StateXtionFnPtr_ _##name##_xtion(StateMachine &sm) { \
     static const ActionFnPtr _action = action_function_wrapper<action>; \
     static const StateXtionFnPtr next_state_xtion = _##next_state##_xtion; \
     static const StateXtionFnPtr self = _##name##_xtion; \
+    if (DEBUG && sm.phase != SM_Running) {debug_time(); debug_phase(sm); debugm(F(#action)); debugm(F("\n"));} \
     static const StateXtionFnPtr_ preds[] = {
 #define STATE(action, next_state) StateXtionFnPtr_ _##action##_xtion(StateMachine &sm) { \
     static const ActionFnPtr _action = action_function_wrapper<action>; \
     static const StateXtionFnPtr next_state_xtion = _##next_state##_xtion; \
     static const StateXtionFnPtr self = _##action##_xtion; \
+    if (DEBUG && sm.phase != SM_Running) {debug_time(); debug_phase(sm); debugm(F(#action)); debugm(F("\n"));} \
     static const StateXtionFnPtr_ preds[] = {
 #define GOTOWHEN(pred, action) gotowhen<pred, _##action##_xtion>,
 #define END_STATE (StateXtionFnPtr_) NULL \
@@ -205,14 +190,16 @@ StateXtionFnPtr_ one_step(StateMachine &sm, ActionFnPtr action, StateXtionFnPtr 
 template<const int ms> boolean sm_delay(StateMachine &sm) {
     // we "stay" in this state till expired, so we can use the user_data
     if (sm.phase == SM_Start) {
-        sm.user_long = millis() + ms;
+        sm.user_ulong = millis() + ms;
+        debugm(F("timer "));debugm(sm.user_ulong);debugm(F("\n"));
         // I suppose we could have expired, e.g. 0ms
         }
         
-    if (millis() >= sm.user_long) {
-        sm.user_long = millis() + ms;
+    if (millis() >= sm.user_ulong) {
+        sm.user_ulong = 0;
         return false;
         }
+
     return true; // again
     }
 
