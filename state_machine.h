@@ -72,8 +72,13 @@ struct StateMachine {
       }
 
     void restart( StateXtionFnPtr_  xtion) {
+      // Finish current state
+      if (current && phase != SM_Finish) {
+        phase = SM_Finish;
+        (*current)(*this);
+        }
+      debugm("[");debugm(millis());debugm("] ");debugm(F("Restart to "));debugm((long)&xtion);debugm(F("\n"));
       current = xtion;
-      // do we need to call finish here?
       phase = SM_Start;
       }
 
@@ -166,15 +171,17 @@ StateXtionFnPtr_ one_step(StateMachine &sm, ActionFnPtr action, StateXtionFnPtr 
     boolean again = (*action)(sm);
     // test preds at then end of every trial
     StateXtionFnPtr *pred = (StateXtionFnPtr*)preds; // head of list
+    int i=0;
     while(*pred) { // till NULL
         StateXtionFnPtr rez = (**pred)(sm); // result is either false or a fnptr
         if (rez) { 
+          debug_time();debugm(F("pred! "));debugm(i);debugm(F("\n"));
           sm.phase = SM_Finish;
           (*action)(sm); // count on the wrappers to inhibit as necessary
           sm.phase = SM_Start;
           return rez; 
           };
-        pred++;
+        pred++; i++;
         }
     if ( again ) {
         return fromxtion;
@@ -191,7 +198,7 @@ template<const int ms> boolean sm_delay(StateMachine &sm) {
     // we "stay" in this state till expired, so we can use the user_data
     if (sm.phase == SM_Start) {
         sm.user_ulong = millis() + ms;
-        debugm(F("timer "));debugm(sm.user_ulong);debugm(F("\n"));
+        debug_time();debugm(F("timer when "));debugm(sm.user_ulong);debugm(F("\n"));
         // I suppose we could have expired, e.g. 0ms
         }
         
