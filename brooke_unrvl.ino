@@ -8,7 +8,9 @@
     Should it say something when the recording is done?
     
     todo
-    * "Attach at least one of the AGND pins to ground? " For line out the AGND is correct!"?
+    * tutorial states: LOUT to amp left, "Connect L- and R- to the AGND pins"
+        ? "Attach at least one of the AGND pins to ground? " For line out the AGND is correct!"?
+        * for line: the electrolytics are + to LR-OUT, - to LR, jack center AGND, v2 has these
     * mp3
         # play sine wave
         # play sound file
@@ -25,7 +27,10 @@
 
 /* Arduino "pro mini 328" https://www.adafruit.com/product/2378
     5v/328
-    requires FTDI
+    requires FTDI, serial works fine with it.
+    * test w/o
+    "driver" https://learn.sparkfun.com/tutorials/how-to-install-ftdi-drivers/all
+    Board set to "Arduino Pro or Pro Mini" (on my linux)
 
 */
 /* PIR https://www.adafruit.com/product/189
@@ -65,7 +70,9 @@
 */
 
 // On for serial/development, 0 for no serial (so you can avoid serial)
+// Serial works fine with the FTDI cable/friend.
 #define DEV 1
+#define ENABLERECORDING 0 // don't do recording
 
 //
 // PINS
@@ -116,7 +123,7 @@ uint8_t recording_buffer[RECBUFFSIZE];
 File recording;
 
 // I'm using a non-blocking sequence tool, so we can respond to pickup/hangup, etc.
-#define DEBUG 0
+#define DEBUG 1 // for statemachine debug output
 #include "state_machine.h"
 
 extern const char ring_msg[];
@@ -159,7 +166,9 @@ STATEMACHINE(ringing_pattern, ring_on_duration);
     END_STATE
     SIMPLESTATEAS(wait_for_hangup, wait_for_onhook, between_calls) // could do a delay<xx> and get annoyed
     // nothing can happen for a bit
-    SIMPLESTATEAS(between_calls, sm_delay<BetweenCalls>, wait_for_victim)
+    STATEAS(between_calls, sm_delay<BetweenCalls>, wait_for_victim)
+        GOTOWHEN(ring_now_button, wait_for_victim)
+    END_STATE
 
 STATEMACHINE(the_system, wait_for_onhook);
 
@@ -173,8 +182,8 @@ struct {
         while (SD.exists(name) && count < 999) {
             count++;
             name[0] = '0' + (count / 100);
-            name[1] = '0' + ((count % 10) / 100);
-            name[2] = '0' + (count % 100);
+            name[1] = '0' + ((count % 100) / 10);
+            name[2] = '0' + (count % 10);
             }
         return;
         }
@@ -206,6 +215,9 @@ void setup() {
 
     print(F("Using "));println(RandomTrigger==1 ? F("random trigger") : F("pir trigger"));
 
+    // Before ANY communication with vs1053
+    // SPI.setClockDivider(SPI_CLOCK_DIV4); // if clocks are not==uno...
+
     // try to get by setup even if stuff is missing
 
     if (! musicPlayer.begin()) { println(F("VS1053 not found. pins?")); }
@@ -223,28 +235,41 @@ void setup() {
 
         if (!SD.exists(hello_file_name)) { print(F("Doesn't exist: ")); println(hello_file_name); }
 
-        // FIXME: if you "prepare" it will disable playing
-        /*
-        print(F("loading "));print(oggimg);print(F(" "));println(millis());
-        if (! musicPlayer.prepareRecordOgg(oggimg)) { println(F("Couldn't load plugin!")); } // that's HIFI
-        else {
-            print(F("loaded "));println(millis());
-            record_to.next_available();
-            print(F("Next recording "));println(record_to.name);
+        if (ENABLERECORDING) {
+            // FIXME: if you "prepare" it will disable playing
+            print(F("loading "));print(oggimg);print(F(" "));println(millis());
+            if (! musicPlayer.prepareRecordOgg(oggimg)) { println(F("Couldn't load plugin!")); } // that's HIFI
+            else {
+                print(F("loaded "));println(millis());
+                record_to.next_available();
+                print(F("Next recording "));println(record_to.name);
+                }
             }
-        */
         }
   
     debug_hello(500); // say something
 
     // 2nd tinkle means "running"
     tinkle();
+
     println(F("End of setup"));
     }
 
 
 void loop() { // tests
     onhook(); // need to constantly poll for debounce. works.
+    
+    //
+    // Real program
+    // Comment out for debugging below, otherwise this is it
+
+    the_system.run();
+
+    // Debug pieces, pick one at a time
+    // Comment them all out for real
+    // 
+    
+    // while(onhook() ) { println(digitalRead(RingNowButton)); delay(300); } // works
 
     // while( onhook() ) test_ringing_polarity();
 
@@ -252,13 +277,46 @@ void loop() { // tests
 
     // while ( onhook() ) ring_sound.run(); // works
 
-    // while( onhook() ) { ringing_pattern.run();  } digitalWrite(RingerPin, HIGH); // works
+    // while( onhook() ) { ringing_pattern.run();  } /*reset*/ digitalWrite(RingerPin, HIGH); // works
 
     // while( onhook() ) { static boolean x=false; if (x!=wait_for_victim()) { x=!x; print(F("Victim? ")); println(x); if(x) tinkle(); } } // works
         
     // while ( !onhook() ) { println(F("beeep")); musicPlayer.sineTest(0x44, 250); println(musicPlayer.playingMusic); delay(300); musicPlayer.sineTest(0x22, 250); delay(300); } // works w/pops/clicks
 
-    if (!onhook()) { delay(300); debug_hello(3000); }
+    // if (!onhook()) { delay(300); debug_hello(3000); } // works with pops etc.
+
+    // debug_record(); // wait for onhook, then goes to record, doesn't return while recording
+
+    }
+
+void debug_record() {
+    println(F("reset"));
+    musicPlayer.reset();
+
+    println(F("Wait for onhook..offhook"));
+    while (!onhook()) {}  
+    while (onhook()) {}
+
+    println(F("Start debug recording"));
+    // record till back on hook
+    record_response(SM_Start); 
+    println(F("continue..."));
+    while (!onhook() && record_response(SM_Running)) {}
+    println(F("finish..."));
+    record_response(SM_Finish); 
+    println(F("finished..."));
+
+    // signal we are done
+    musicPlayer.sineTest(0x44,100);
+    tinkle();
+    println(F("record done, playing..."));
+
+    // play the "last" recording
+    musicPlayer.playFullFile(record_to.name);
+    musicPlayer.sineTest(0x22,100);
+    tinkle();
+
+    print(F("debug-recording done "));println(record_to.name); println();
     }
 
 void tinkle() {
@@ -334,6 +392,7 @@ boolean use_random_trigger_interval() {
         }
 
     if (millis() > timer) {
+        println(F("trigger"));
         timer = 0; // for next time we are used
         return true;
         }
@@ -359,15 +418,19 @@ boolean motion() {
     return has_motion;
     }
 
+boolean ring_now_button() {
+    digitalRead(RingNowButton) == LOW;
+    }
+
 boolean wait_for_victim() {
     // shouldn't have to worry about onhook here, but it makes it clear
     int ring_now = digitalRead(RingNowButton) == LOW;
     boolean the_trigger = // one of motion or random:
-    #if RandomTrigger==0
-        motion();
-    #else
-        use_random_trigger_interval();
-    #endif
+        #if RandomTrigger==0
+            motion();
+        #else
+            use_random_trigger_interval();
+        #endif
     return !( onhook() && ( ring_now || the_trigger ) ); // we are waiting for both
     }
 
@@ -383,28 +446,35 @@ boolean ring_the_phone(StateMachinePhase phase) {
 boolean record_response(StateMachinePhase phase) {
     static unsigned long timer = 0;
 
-    const char *filename = "bob"; // next file name
-
     if (phase == SM_Start) {
         print(F("Recording to ")); println(record_to.name);
-        recording = SD.open(filename, FILE_WRITE); // FIXME
-        if (! recording) { println(F("Couldn't open file to record!")); return false; }
-        musicPlayer.startRecordOgg(true); // use microphone (for linein, pass in 'false')
-        timer = 0;
+        if (ENABLERECORDING) {
+            recording = SD.open(record_to.name, FILE_WRITE); // FIXME
+            if (! recording) { println(F("Couldn't open file to record!")); return false; }
+            println(F("opened..."));
+            musicPlayer.startRecordOgg(true); // use microphone (for linein, pass in 'false')
+            }
+        println(F("started..."));
+        timer = millis() + RecordingLength;
         return true; // and continue
         }
     else if (phase == SM_Running) {
         // record for a while
-        uint16_t ct = saveRecordedData(true);
-        print(F("sound "));println(ct);
-        return ! wait_for(timer, RecordingLength);
+        if (ENABLERECORDING) {
+            uint16_t ct = saveRecordedData(true);
+            print(F("sound "));println(ct);
+            }
+        return millis() < timer;
         }
     else if (phase == SM_Finish) {
         // cleanup fixme
-        musicPlayer.stopRecordOgg();
-        uint16_t ct = saveRecordedData(false);
-        print(F("sound final "));println(ct);
-        recording.close();
+        if (ENABLERECORDING) {
+            musicPlayer.stopRecordOgg();
+            println(F("stoppedogg"));
+            uint16_t ct = saveRecordedData(false);
+            print(F("sound final "));println(ct);
+            recording.close();
+            }
 
         record_to.next_available(); // we preincrement
         return false;
@@ -550,4 +620,3 @@ boolean wait_for(byte *state, long unsigned int wait) {
     return false;
   } 
 }
-
