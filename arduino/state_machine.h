@@ -61,6 +61,7 @@ struct StateMachine {
     // subclass for your own user-data
     StateMachinePhase phase;
     StateXtionFnPtr current;
+    boolean recurse; // flag for re-entered
     // User data:
     union {
       unsigned long user_ulong;
@@ -83,18 +84,23 @@ struct StateMachine {
       }
 
     boolean run() {
-        // debugm("Step action ");debugm((long)current);debugm(" @");debugm(phase);debugm("...");
+        if (recurse) { debugm("Reentered!"); while(1) {} }
+        recurse = true;
+
+        // debugm((long)this); debugm(" Step action ");debugm((long)current);debugm(" @");debugm(phase);debugm("...\n");
 
         // someone might try to run us after we signaled "all done"
         if (current == NULL) {
+            recurse = false;
             return false;
             }
 
         // The StateXtionFn (_realstatename_xtion) returns "what to do next", which may be stay
         StateXtionFnPtr next_state = (*current)(*this);
 
+        // debugm((long)this); debugm(" ->");debugm((long)next_state);debugm("\n"); 
         if (next_state != current) { 
-            // debugm(" !->");debugm((long)next_state);debugm("\n"); 
+            // debugm((long)this); debugm(" !->");debugm((long)next_state);debugm("\n"); 
             }
         else { 
             phase = SM_Running;
@@ -105,7 +111,8 @@ struct StateMachine {
         current = next_state;
 
         // a null means the state-machine wants to quit
-        return current == NULL;
+        recurse = false;
+        return current != NULL;
         }
 
     };
@@ -113,6 +120,13 @@ struct StateMachine {
 typedef boolean (*BooleanFnPtr)();
 
 template<BooleanFnPtr pred, StateXtionFnRef next_state> StateXtionFnPtr_ gotowhen(StateMachine &sm) { return (*pred)() ? next_state : NULL; }
+
+inline void debug_phase(StateMachine &sm) { 
+  #if DEBUG==1
+    static const char *phasename[] = { "SM_Start", "SM_Running", "SM_Finish" };
+    debugm(phasename[ sm.phase ]); debugm(" ");
+  #endif
+  }
 
 // Action functions can have a variety of signatures:
 // return boolean or not: true means "do me again till I give false". void means "do me once"
@@ -124,40 +138,36 @@ template<boolean fn(StateMachine &sm)> inline boolean action_function_wrapper(St
 template<boolean fn(StateMachinePhase phase)> inline boolean action_function_wrapper(StateMachine &sm) { return fn(sm.phase); }
 template<boolean fn()> inline boolean action_function_wrapper(StateMachine &sm) { return sm.phase==SM_Finish ? false : fn(); }
 template<void fn(StateMachine &sm, StateMachinePhase phase)> inline boolean action_function_wrapper(StateMachine &sm) { fn(sm, sm.phase); return false; }
-template<void fn(StateMachine &sm)> inline boolean action_function_wrapper(StateMachine &sm) { if(sm.phase != SM_Finish) {fn(sm);} return false;}
+template<void fn(StateMachine &sm)> inline boolean action_function_wrapper(StateMachine &sm) { if(sm.phase != SM_Finish) { fn(sm); } return false;} // will only call once with SM_Start
 template<void fn()> inline boolean action_function_wrapper(StateMachine &sm) { if(sm.phase != SM_Finish) {fn();} return false; }
 
 inline void debug_time() { debugm("[");debugm(millis());debugm("] "); }
-inline void debug_phase(StateMachine &sm) { 
-  #if DEBUG==1
-    static const char *phasename[] = { "SM_Start", "SM_Running", "SM_Finish" };
-    debugm(phasename[ sm.phase ]); debugm(" ");
-  #endif
-  }
 
-StateXtionFnPtr_ _NULL_xtion(StateMachine &sm) { return NULL; }
+StateXtionFnPtr_ _NULL_xtion(StateMachine &sm) { return false; }
 const StateXtionFnPtr_ NOPREDS[] = { (StateXtionFnPtr_) NULL };
+
+#define debug_state_msg(sm, action) if (DEBUG && sm.phase != SM_Running) {debug_time(); debugm((long)&sm);debugm(" ");debug_phase(sm); debugm(F(#action)); debugm(F(" ")); debugm((long) &_##action##_xtion); debugm(F("\n"));}
 
 #define XTIONNAME(action) _##action##_xtion
 #define SIMPLESTATE(action, next_state) StateXtionFnPtr_ _##action##_xtion(StateMachine &sm) { \
-    if (DEBUG && sm.phase != SM_Running) {debug_time(); debug_phase(sm); debugm(F(#action)); debugm(F("\n"));} \
+    debug_state_msg(sm, action) \
     return one_step(sm, action_function_wrapper<action>, _##action##_xtion, NOPREDS, _##next_state##_xtion); \
     }
 #define SIMPLESTATEAS(name, action, next_state) StateXtionFnPtr_ _##name##_xtion(StateMachine &sm) { \
-  if (DEBUG && sm.phase != SM_Running) {debug_time(); debug_phase(sm); debugm(F(#name":"#action)); debugm(F("\n"));} \
+  debug_state_msg(sm, name) \
   return one_step(sm, action_function_wrapper<action>, _##name##_xtion, NOPREDS, _##next_state##_xtion); \
   }
 #define STATEAS(name, action, next_state) StateXtionFnPtr_ _##name##_xtion(StateMachine &sm) { \
     static const ActionFnPtr _action = action_function_wrapper<action>; \
     static const StateXtionFnPtr next_state_xtion = _##next_state##_xtion; \
     static const StateXtionFnPtr self = _##name##_xtion; \
-    if (DEBUG && sm.phase != SM_Running) {debug_time(); debug_phase(sm); debugm(F(#action)); debugm(F("\n"));} \
+    debug_state_msg(sm, name) \
     static const StateXtionFnPtr_ preds[] = {
 #define STATE(action, next_state) StateXtionFnPtr_ _##action##_xtion(StateMachine &sm) { \
     static const ActionFnPtr _action = action_function_wrapper<action>; \
     static const StateXtionFnPtr next_state_xtion = _##next_state##_xtion; \
     static const StateXtionFnPtr self = _##action##_xtion; \
-    if (DEBUG && sm.phase != SM_Running) {debug_time(); debug_phase(sm); debugm(F(#action)); debugm(F("\n"));} \
+    debug_state_msg(sm, action) \
     static const StateXtionFnPtr_ preds[] = {
 #define GOTOWHEN(pred, action) gotowhen<pred, _##action##_xtion>,
 #define END_STATE (StateXtionFnPtr_) NULL \
@@ -168,10 +178,14 @@ const StateXtionFnPtr_ NOPREDS[] = { (StateXtionFnPtr_) NULL };
 #define RESTART(machine, action) machine.restart(_##action##_xtion)
 
 StateXtionFnPtr_ one_step(StateMachine &sm, ActionFnPtr action, StateXtionFnPtr fromxtion, const StateXtionFnPtr_ preds[], StateXtionFnPtr nextxtion) {
+    // debugm("1st ");debugm((long)action);debugm(" ");
     boolean again = (*action)(sm);
+    // debugm((long)fromxtion);debugm(F(" again? "));debugm(again);debugm("\n");
+
     // test preds at then end of every trial
     StateXtionFnPtr *pred = (StateXtionFnPtr*)preds; // head of list
     int i=0;
+    // debugm("pred");
     while(*pred) { // till NULL
         StateXtionFnPtr rez = (**pred)(sm); // result is either false or a fnptr
         if (rez) { 
@@ -184,10 +198,12 @@ StateXtionFnPtr_ one_step(StateMachine &sm, ActionFnPtr action, StateXtionFnPtr 
         pred++; i++;
         }
     if ( again ) {
+        // debugm("<again>" );
         return fromxtion;
         }
     else {
         sm.phase = SM_Finish;
+        // debugm("finished ");
         (*action)(sm); // count on the wrappers to inhibit as necessary
         sm.phase = SM_Start;
         return nextxtion;
@@ -196,6 +212,11 @@ StateXtionFnPtr_ one_step(StateMachine &sm, ActionFnPtr action, StateXtionFnPtr 
 
 template<const int ms> boolean sm_delay(StateMachine &sm) {
     // we "stay" in this state till expired, so we can use the user_data
+    if (sm.phase == SM_Finish) {
+      sm.user_ulong = 0;
+      return false;
+      }
+
     if (sm.phase == SM_Start) {
         sm.user_ulong = millis() + ms;
         debug_time();debugm(F("timer when "));debugm(sm.user_ulong);debugm(F("\n"));
@@ -203,7 +224,7 @@ template<const int ms> boolean sm_delay(StateMachine &sm) {
         }
         
     if (millis() >= sm.user_ulong) {
-        sm.user_ulong = 0;
+        debug_time();debugm(F("timerwhen'd "));debugm(sm.user_ulong);debugm(F("\n"));
         return false;
         }
 

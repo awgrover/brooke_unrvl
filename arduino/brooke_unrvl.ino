@@ -101,21 +101,23 @@
 
 #define StopRingingAfter (30 * 1000) // millis
 #define RecordingLength (10*1000) // millis
-#define BetweenCalls (30 * 1000) // millis
+#define BetweenCalls (30 * 1000) // millis 
 
 #define HookDebounce 10 // millis to wait for a steady value
 #define PIRDebounce 20 // PIR also needs debounce (for "on")
 #define PIRStabilize (30*1000) // PIR takes some initial time to stabilize on power up
 
 #define RandomTrigger 1 // 0 for PIR, 1 for random_trigger_interval
-const int random_trigger_interval[] = { 1*60, 5*60 }; // 1 to 5 minutes (in seconds) fixme
+const int random_trigger_interval[] = { 30, 4*60 }; // 1 to 5 minutes (in seconds)
 
 #include <SPI.h>
 #include <Adafruit_VS1053.h>
 #include <SD.h>
 Adafruit_VS1053_FilePlayer musicPlayer(BREAKOUT_RESET, BREAKOUT_CS, BREAKOUT_DCS, DREQ, CARDCS);
 
-const char hello_file_name[] = "hello.mp3";
+char hello_file_name[] = "hello7.mp3";
+#define HelloMessageCount 7
+
 // Profile, 44khz, "good" quality. see datasheet.
 char oggimg[] = "v44k1q05.img"; // should be const, too bad, but can't
 #define RECBUFFSIZE 128  // 64 or 128 bytes.
@@ -123,7 +125,7 @@ uint8_t recording_buffer[RECBUFFSIZE];
 File recording;
 
 // I'm using a non-blocking sequence tool, so we can respond to pickup/hangup, etc.
-#define DEBUG 1 // for statemachine debug output
+#define DEBUG 0 // for statemachine debug output
 #include "state_machine.h"
 
 extern const char ring_msg[];
@@ -419,7 +421,9 @@ boolean motion() {
     }
 
 boolean ring_now_button() {
-    digitalRead(RingNowButton) == LOW;
+    int rez = digitalRead(RingNowButton);
+    // print("but ");println(rez);
+    return rez == LOW;
     }
 
 boolean wait_for_victim() {
@@ -437,6 +441,7 @@ boolean wait_for_victim() {
 boolean ring_the_phone(StateMachinePhase phase) {
     static unsigned long timer = 0;
     if (phase == SM_Start) {
+        timer = 0;
         RESTART(ringing_pattern, ring_on_duration); // we always restart the pattern 
         }
     ringing_pattern.run();
@@ -467,7 +472,6 @@ boolean record_response(StateMachinePhase phase) {
         return millis() < timer;
         }
     else if (phase == SM_Finish) {
-        // cleanup fixme
         if (ENABLERECORDING) {
             musicPlayer.stopRecordOgg();
             println(F("stoppedogg"));
@@ -487,11 +491,18 @@ boolean debug_hello(int duration) {
     saying_hello(SM_Start);
     while (saying_hello(SM_Running)) { if (millis() > timeout) {println("timeout"); break;}; onhook(); }
     saying_hello(SM_Finish);
+    return false;
     }
 
 boolean saying_hello(StateMachinePhase phase) {
     if (phase == SM_Start) {
         print(F("start hello "));println(millis());
+
+        // random file hello1..hello9
+        // int which_hello = random(0,HelloMessageCount);
+        // hello_file_name[5] = '1' + which_hello;
+        println(hello_file_name);
+
         if (!musicPlayer.startPlayingFile(hello_file_name)) { // background
             println(F("startPlayingFile failed"));
             return false;
@@ -510,9 +521,12 @@ boolean saying_hello(StateMachinePhase phase) {
         }
     }
 
-boolean ring_on_duration() {
+boolean ring_on_duration(StateMachinePhase phase) {
     // run ring_sound for n millis
     static unsigned long timer = 0; 
+    if (phase == SM_Start) {
+        timer = 0;
+        }
     ring_sound.run();
     return ! wait_for(timer, 1000);
     }
@@ -611,7 +625,7 @@ boolean wait_for(byte *state, long unsigned int wait) {
       *timer = wait + millis();
       return false;
   }
-  else if (*timer <= millis()) {
+  else if (millis() >= *timer ) {
     // print(millis()); print(F(": ")); print(F("Finish delay ")); println(wait);
     *timer = 0;
     return true;
