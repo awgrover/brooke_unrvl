@@ -80,7 +80,8 @@
 #define RingNowButton 2 // an external momentary to cause it to ring now for demo
 #define DREQ 3       // VS1053 Data request, ideally an Interrupt pin. 2 or 3 on UNO
 #define CARDCS 4     // VS1053-breakout SDCard select pin
-#define OnHookPin 5 // other side is +5, so onhook is LOW, need pulldown
+#define OnHookPin 5 // other side is +5, open is LOW, need pulldown. Currently, onhook is HIGH
+#define OnHookSignal HIGH
 #define RingerPin 6 
 #define PIRPin 7
 #define BREAKOUT_DCS    8      // VS1053 Data/command select pin (output)
@@ -267,10 +268,13 @@ void loop() { // tests
 
     the_system.run();
 
+
     // Debug pieces, pick one at a time
     // Comment them all out for real
     // 
     
+    // pinstate(OnHookPin);
+
     // while(onhook() ) { println(digitalRead(RingNowButton)); delay(300); } // works
 
     // while( onhook() ) test_ringing_polarity();
@@ -289,6 +293,11 @@ void loop() { // tests
 
     // debug_record(); // wait for onhook, then goes to record, doesn't return while recording
 
+    }
+
+void pinstate(int pin) {
+    int v = digitalRead(pin);
+    println(v);
     }
 
 void debug_record() {
@@ -359,15 +368,15 @@ boolean wait_for_onhook() {
     }
 
 boolean onhook() {
-    static boolean is_onhook = true; // got to start somewhere, true and LOW
-    static int last_sample = LOW;
+    static boolean is_onhook = true; // got to start somewhere, true and onhook
+    static int last_sample = OnHookSignal;
     static unsigned long debounce_timer;
 
     int now_sample = digitalRead(OnHookPin); // onhook = LOW
 
     if (last_sample != now_sample) {
         // it changed, start/keep debouncing
-        // print(now_sample);print(F(" "));print(is_onhook);print(F(" "));println();
+        print(now_sample);print(F(" "));print(is_onhook);print(F(" "));println();
         debounce_timer = 0ul;
         wait_for(debounce_timer,  HookDebounce); // starts it (sets debounce_timer) 
         last_sample = now_sample;
@@ -375,8 +384,8 @@ boolean onhook() {
 
     if ( debounce_timer > 0 && wait_for(debounce_timer, 0) ) { // ignores the 2nd arg
         // timer was started is done
-        println(now_sample==LOW ? "onhook" : "offhook");
-        is_onhook = now_sample == LOW;
+        println(now_sample==OnHookSignal ? "onhook" : "offhook");
+        is_onhook = now_sample == OnHookSignal;
         }
 
     return is_onhook;
