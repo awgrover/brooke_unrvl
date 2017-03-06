@@ -508,8 +508,8 @@ boolean saying_hello(StateMachinePhase phase) {
         print(F("start hello "));println(millis());
 
         // random file hello1..hello9
-        // int which_hello = random(0,HelloMessageCount);
-        // hello_file_name[5] = '1' + which_hello;
+        int which_hello = random(0,HelloMessageCount);
+        hello_file_name[5] = '1' + which_hello;
         println(hello_file_name);
 
         if (!musicPlayer.startPlayingFile(hello_file_name)) { // background
