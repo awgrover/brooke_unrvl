@@ -100,7 +100,7 @@
 #define RingingDuration 1500   // millis
 #define BetweenRings  1000     // millis
 
-#define StopRingingAfter (30 * 1000) // millis
+#define StopRingingAfter (15 * 1000) // millis
 #define RecordingLength (10*1000) // millis
 #define BetweenCalls (30 * 1000) // millis 
 
@@ -117,7 +117,7 @@ const int random_trigger_interval[] = { 30, 4*60 }; // 1 to 5 minutes (in second
 Adafruit_VS1053_FilePlayer musicPlayer(BREAKOUT_RESET, BREAKOUT_CS, BREAKOUT_DCS, DREQ, CARDCS);
 
 char hello_file_name[] = "hello7.mp3";
-#define HelloMessageCount 7
+#define HelloMessageCount 6 // number of random messages +1 (0..5) + 1
 
 // Profile, 44khz, "good" quality. see datasheet.
 char oggimg[] = "v44k1q05.img"; // should be const, too bad, but can't
